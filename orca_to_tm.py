@@ -650,6 +650,10 @@ def convert_orca_output(orca_output_file: Path, openshell: bool) -> None:
     with open(orca_output_file, "r") as orca_out:
         orca_content = orca_out.read()
 
+    # if not ORCA TERMINATED NORMALLY in orca_content raise an error
+    if "ORCA TERMINATED NORMALLY" not in orca_content:
+        raise ValueError("ORCA did not terminate normally.")
+
     # grep the number of atoms from this line:
     # ```Number of atoms                             ...      9```
     natoms = int(orca_content.split("Number of atoms")[1].split()[1])
@@ -751,11 +755,18 @@ def main():
     # execute ORCA with the generated input file
     orca_output_file, orca_error_file = execute_orca(orca_input)
 
+    # raise appropriate error if orca_output does not contain "ORCA TERMINATED NORMALLY"
+    if not orca_output_file.is_file():
+        raise FileNotFoundError(f"ORCA output file '{orca_output_file}' not found.")
+
     # open both files and print the content
     if args.verbose:
         with open(orca_output_file, "r") as orca_out, open(
             orca_error_file, "r"
         ) as orca_err:
+            # if not ORCA TERMINATED NORMALLY in orca_content raise an error
+            if "ORCA TERMINATED NORMALLY" not in orca_out:
+                raise ValueError("ORCA did not terminate normally.")
             print("ORCA output file:")
             print(orca_out.read())
             print("ORCA error file:")
