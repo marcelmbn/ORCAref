@@ -10,6 +10,130 @@ from pathlib import Path
 import argparse as ap
 import subprocess as sp
 
+PSE = {
+    0: "X",
+    1: "H",
+    2: "He",
+    3: "Li",
+    4: "Be",
+    5: "B",
+    6: "C",
+    7: "N",
+    8: "O",
+    9: "F",
+    10: "Ne",
+    11: "Na",
+    12: "Mg",
+    13: "Al",
+    14: "Si",
+    15: "P",
+    16: "S",
+    17: "Cl",
+    18: "Ar",
+    19: "K",
+    20: "Ca",
+    21: "Sc",
+    22: "Ti",
+    23: "V",
+    24: "Cr",
+    25: "Mn",
+    26: "Fe",
+    27: "Co",
+    28: "Ni",
+    29: "Cu",
+    30: "Zn",
+    31: "Ga",
+    32: "Ge",
+    33: "As",
+    34: "Se",
+    35: "Br",
+    36: "Kr",
+    37: "Rb",
+    38: "Sr",
+    39: "Y",
+    40: "Zr",
+    41: "Nb",
+    42: "Mo",
+    43: "Tc",
+    44: "Ru",
+    45: "Rh",
+    46: "Pd",
+    47: "Ag",
+    48: "Cd",
+    49: "In",
+    50: "Sn",
+    51: "Sb",
+    52: "Te",
+    53: "I",
+    54: "Xe",
+    55: "Cs",
+    56: "Ba",
+    57: "La",
+    58: "Ce",
+    59: "Pr",
+    60: "Nd",
+    61: "Pm",
+    62: "Sm",
+    63: "Eu",
+    64: "Gd",
+    65: "Tb",
+    66: "Dy",
+    67: "Ho",
+    68: "Er",
+    69: "Tm",
+    70: "Yb",
+    71: "Lu",
+    72: "Hf",
+    73: "Ta",
+    74: "W",
+    75: "Re",
+    76: "Os",
+    77: "Ir",
+    78: "Pt",
+    79: "Au",
+    80: "Hg",
+    81: "Tl",
+    82: "Pb",
+    83: "Bi",
+    84: "Po",
+    85: "At",
+    86: "Rn",
+    87: "Fr",
+    88: "Ra",
+    89: "Ac",
+    90: "Th",
+    91: "Pa",
+    92: "U",
+    93: "Np",
+    94: "Pu",
+    95: "Am",
+    96: "Cm",
+    97: "Bk",
+    98: "Cf",
+    99: "Es",
+    100: "Fm",
+    101: "Md",
+    102: "No",
+    103: "Lr",
+    104: "Rf",
+    105: "Db",
+    106: "Sg",
+    107: "Bh",
+    108: "Hs",
+    109: "Mt",
+    110: "Ds",
+    111: "Rg",
+    112: "Cn",
+    113: "Nh",
+    114: "Fl",
+    115: "Mc",
+    116: "Lv",
+    117: "Ts",
+    118: "Og",
+}
+PSE_NUMBERS: dict[str, int] = {k.lower(): v for v, k in PSE.items()}
+PSE_SYMBOLS: dict[int, str] = {v: k.lower() for v, k in PSE.items()}
+
 
 class Population:
     """
@@ -23,15 +147,26 @@ class Population:
 
     def __init__(self, atom: int):
         self.atom = atom
+        self.ati: int | None = None
+        # Mulliken charges and populations
         self.mull_q: float | None = None
         self.mull_p_s: float | None = None
         self.mull_p_p: float | None = None
         self.mull_p_d: float | None = None
         self.mull_p_f: float | None = None
         self.mull_p_g: float | None = None
+        # Mulliken spin populations
+        self.mull_spinpop: float | None = None
+        self.mull_spinpop_s: float | None = None
+        self.mull_spinpop_p: float | None = None
+        self.mull_spinpop_d: float | None = None
+        self.mull_spinpop_f: float | None = None
+        self.mull_spinpop_g: float | None = None
 
     def __str__(self):
         returnstr = f"Atom: {self.atom}\n"
+        if self.ati is not None:
+            returnstr += f"Atom type: {PSE_SYMBOLS[self.ati]}\n"
         if self.mull_q is not None:
             returnstr += f"Mulliken charge: {self.mull_q:8.5f}\n"
         if self.mull_p_s is not None:
@@ -44,11 +179,106 @@ class Population:
             returnstr += f"Mulliken population 'f': {self.mull_p_f:8.5f}\n"
         if self.mull_p_g is not None:
             returnstr += f"Mulliken population 'g': {self.mull_p_g:8.5f}\n"
+        # if self.mull_spinpop is not None: print spin populations in a similar fashion
+        if self.mull_spinpop is not None:
+            # first print a separation line
+            returnstr += "-" * 80 + "\n"
+            returnstr += f"Mulliken spin population: {self.mull_spinpop:8.5f}\n"
+        if self.mull_spinpop_s is not None:
+            returnstr += f"Mulliken spin population 's': {self.mull_spinpop_s:8.5f}\n"
+        if self.mull_spinpop_p is not None:
+            returnstr += f"Mulliken spin population 'p': {self.mull_spinpop_p:8.5f}\n"
+        if self.mull_spinpop_d is not None:
+            returnstr += f"Mulliken spin population 'd': {self.mull_spinpop_d:8.5f}\n"
+        if self.mull_spinpop_f is not None:
+            returnstr += f"Mulliken spin population 'f': {self.mull_spinpop_f:8.5f}\n"
+        if self.mull_spinpop_g is not None:
+            returnstr += f"Mulliken spin population 'g': {self.mull_spinpop_g:8.5f}\n"
         return returnstr
 
 
+def write_tm_mulliken(
+    pops: list[Population], filename: str | Path, openshell: bool = False
+) -> None:
+    """
+    Write the Mulliken population information in the TM output format.
+    ```
+        atomic populations from total density:
+
+     atom      charge    n(s)      n(p)      n(d)      n(f)      n(g)
+         1ce     1.78562   4.00840  12.04756  10.91160   1.24681
+         2f     -0.59626   1.97543   5.62083
+         3f     -0.59624   1.97543   5.62081
+         4f     -0.59311   1.97544   5.61767
+    ```
+    if open shell:
+
+    ```
+     Unpaired electrons from D(alpha)-D(beta)
+
+     atom      total     n(s)      n(p)      n(d)      n(f)      n(g)
+         1ce     1.02700   0.00016  -0.00016   0.02946   0.99754
+         2f     -0.00800  -0.00015  -0.00785
+         3f     -0.00800  -0.00015  -0.00786
+         4f     -0.01099  -0.00015  -0.01084
+    ```
+    """
+    tm_mull = "    atomic populations from total density:\n\n"
+    tm_mull += "atom      charge    n(s)      n(p)      n(d)      n(f)      n(g)\n"
+    for pop in pops:
+        if pop.ati is None:
+            raise ValueError("No atom type found.")
+        tm_mull += f"    {pop.atom:>3}{PSE_SYMBOLS[pop.ati]:<2}     "
+        tm_mull += f"{pop.mull_q:8.5f}   "
+        tm_mull += f"{pop.mull_p_s:8.5f}  " if pop.mull_p_s is not None else " " * 12
+        tm_mull += f"{pop.mull_p_p:8.5f}  " if pop.mull_p_p is not None else " " * 12
+        tm_mull += f"{pop.mull_p_d:8.5f}  " if pop.mull_p_d is not None else " " * 12
+        tm_mull += f"{pop.mull_p_f:8.5f}  " if pop.mull_p_f is not None else " " * 12
+        tm_mull += f"{pop.mull_p_g:8.5f}  " if pop.mull_p_g is not None else " " * 12
+        tm_mull += "\n"
+
+    # if spin populations are present, print them as well
+    if openshell:
+        tm_mull += "\n    Unpaired electrons from D(alpha)-D(beta)\n\n"
+        tm_mull += "atom      total     n(s)      n(p)      n(d)      n(f)      n(g)\n"
+        for pop in pops:
+            if pop.ati is None:
+                raise ValueError("No atom type found.")
+            tm_mull += f"    {pop.atom:>3}{PSE_SYMBOLS[pop.ati]:<2}     "
+            tm_mull += f"{pop.mull_spinpop:8.5f}   "
+            tm_mull += (
+                f"{pop.mull_spinpop_s:8.5f}  "
+                if pop.mull_spinpop_s is not None
+                else " " * 12
+            )
+            tm_mull += (
+                f"{pop.mull_spinpop_p:8.5f}  "
+                if pop.mull_spinpop_p is not None
+                else " " * 12
+            )
+            tm_mull += (
+                f"{pop.mull_spinpop_d:8.5f}  "
+                if pop.mull_spinpop_d is not None
+                else " " * 12
+            )
+            tm_mull += (
+                f"{pop.mull_spinpop_f:8.5f}  "
+                if pop.mull_spinpop_f is not None
+                else " " * 12
+            )
+            tm_mull += (
+                f"{pop.mull_spinpop_g:8.5f}  "
+                if pop.mull_spinpop_g is not None
+                else " " * 12
+            )
+            tm_mull += "\n"
+
+    with open(filename, "w", encoding="utf8") as tm_out:
+        tm_out.write(tm_mull)
+
+
 def parse_orca_mulliken_charges(
-    populations: list[Population], orca_output: str
+    populations: list[Population], orca_output: str, openshell: bool = False
 ) -> list[Population]:
     """
     Parse the ORCA output file and extract the Mulliken population analysis.
@@ -72,13 +302,19 @@ def parse_orca_mulliken_charges(
                 atom_number: str | int
                 atom_number, atom_symbol = atom.split()
                 atom_number = int(atom_number)
+
+                if openshell:
+                    charge, spin_pop = charge.split()
                 # append the atom and charge to the list
                 populations[atom_number].mull_q = float(charge)
+                populations[atom_number].ati = PSE_NUMBERS[atom_symbol.lower()]
+                if openshell:
+                    populations[atom_number].mull_spinpop = float(spin_pop)
     return populations
 
 
 def parse_mulliken_reduced_orbital_charges(
-    populations: list[Population], orca_output: str, nat: int
+    populations: list[Population], orca_output: str, nat: int, openshell: bool = False
 ) -> list[Population]:
     """
     Parse the ORCA output file and extract the Mulliken reduced orbital charges.
@@ -122,9 +358,12 @@ def parse_mulliken_reduced_orbital_charges(
         if "MULLIKEN REDUCED ORBITAL CHARGES" in line:
             # iterate over the lines after the line with the header
             atom_number: str | int | None
+            last_atom = False
             for j in range(i + 2, len(lines)):
+                # if SPIN in line: break
+                if "SPIN" in lines[j]:
+                    break
                 # check if the line is empty
-                last_atom = False
                 if "s :" in lines[j]:
                     # split the line by ":"
                     atom_information, _, mull_s = lines[j].split(":")
@@ -162,6 +401,57 @@ def parse_mulliken_reduced_orbital_charges(
                     atom_number = None
                     if last_atom:
                         break
+    if openshell:
+        # iterate over the lines
+        for i, line in enumerate(lines):
+            # check if the line contains the Mulliken reduced orbital charges
+            if "MULLIKEN REDUCED ORBITAL CHARGES AND SPIN POPULATIONS" in line:
+                # iterate over the lines after the line with the header
+                start_spin_pops = False
+                last_atom = False
+                for j in range(i + 2, len(lines)):
+                    if "SPIN" in lines[j]:
+                        start_spin_pops = True
+                    if not start_spin_pops:
+                        continue
+                    # check if the line is empty
+                    if "s :" in lines[j]:
+                        # split the line by ":"
+                        atom_information, _, mull_s = lines[j].split(":")
+                        atom_number, atom_symbol, _ = atom_information.split()
+                        atom_number = int(atom_number)
+                        if atom_number >= nat - 1:
+                            last_atom = True
+                        # append the atom and charge to the list
+                        populations[atom_number].mull_spinpop_s = float(mull_s)
+                    if "p :" in lines[j]:
+                        if atom_number is None or not isinstance(atom_number, int):
+                            raise ValueError("No atom number found.")
+                        # split the line by ":"
+                        _, _, mull_p = lines[j].split(":")
+                        populations[atom_number].mull_spinpop_p = float(mull_p.strip())
+                    if "d :" in lines[j]:
+                        if atom_number is None or not isinstance(atom_number, int):
+                            raise ValueError("No atom number found.")
+                        # split the line by ":"
+                        _, _, mull_d = lines[j].split(":")
+                        populations[atom_number].mull_spinpop_d = float(mull_d.strip())
+                    if "f :" in lines[j]:
+                        if atom_number is None or not isinstance(atom_number, int):
+                            raise ValueError("No atom number found.")
+                        # split the line by ":"
+                        _, _, mull_f = lines[j].split(":")
+                        populations[atom_number].mull_spinpop_f = float(mull_f.strip())
+                    if "g :" in lines[j]:
+                        if atom_number is None or not isinstance(atom_number, int):
+                            raise ValueError("No atom number found.")
+                        # split the line by ":"
+                        _, _, mull_g = lines[j].split(":")
+                        populations[atom_number].mull_spinpop_g = float(mull_g.strip())
+                    if lines[j].strip() == "":
+                        atom_number = None
+                        if last_atom:
+                            break
 
     return populations
 
@@ -227,7 +517,7 @@ def get_args() -> ap.Namespace:
     return parser.parse_args()
 
 
-def convert_orca_output(orca_output_file: Path) -> str:
+def convert_orca_output(orca_output_file: Path, openshell: bool) -> str:
     """
     Parse the ORCA output file and extract relevant information.
 
@@ -350,12 +640,15 @@ def convert_orca_output(orca_output_file: Path) -> str:
     populations = [Population(i + 1) for i in range(natoms)]
 
     # mulliken_charges contains the Mulliken atomic charges with atom number as key and charge as value
-    populations = parse_orca_mulliken_charges(populations, orca_content)
+    populations = parse_orca_mulliken_charges(populations, orca_content, openshell)
     populations = parse_mulliken_reduced_orbital_charges(
-        populations, orca_content, natoms
+        populations, orca_content, natoms, openshell=openshell
     )
     for pop in populations:
         print(pop)
+
+    # write the TM output file
+    write_tm_mulliken(populations, "tm.out", openshell)
 
     return ""
 
@@ -377,6 +670,20 @@ def main():
     if "--outname" in args.qvSZP:
         orca_input = Path(args.qvSZP.split("--outname")[1].split()[0] + ".inp")
 
+    # parse the multiplicities from the ORCA input file
+    # line in ORCA input: `* xyz    1  2`
+    with open(orca_input, "r") as orca_in:
+        for line in orca_in:
+            if "* xyz" in line:
+                multiplicity = int(line.split()[3])
+                break
+    if multiplicity is None:
+        raise ValueError("No multiplicity found.")
+    if multiplicity > 1:
+        openshell = True
+    else:
+        openshell = False
+
     # execute ORCA with the generated input file
     orca_output_file, orca_error_file = execute_orca(orca_input)
 
@@ -390,7 +697,7 @@ def main():
             print("ORCA error file:")
             print(orca_err.read())
 
-    tm_output = convert_orca_output(orca_output_file)
+    tm_output = convert_orca_output(orca_output_file, openshell)
 
 
 if __name__ == "__main__":
