@@ -367,7 +367,12 @@ def parse_mulliken_reduced_orbital_charges(
                 if "s :" in lines[j]:
                     # split the line by ":"
                     atom_information, _, mull_s = lines[j].split(":")
-                    atom_number, atom_symbol, _ = atom_information.split()
+                    atom_num_sym_angmom = atom_information.strip().split()
+                    # check if it contains two or three elements
+                    if len(atom_num_sym_angmom) == 2:
+                        atom_number, atom_symbol = atom_num_sym_angmom
+                    elif len(atom_num_sym_angmom) == 3:
+                        atom_number, atom_symbol, _ = atom_num_sym_angmom
                     atom_number = int(atom_number)
                     if atom_number >= nat - 1:
                         last_atom = True
@@ -418,7 +423,12 @@ def parse_mulliken_reduced_orbital_charges(
                     if "s :" in lines[j]:
                         # split the line by ":"
                         atom_information, _, mull_s = lines[j].split(":")
-                        atom_number, atom_symbol, _ = atom_information.split()
+                        atom_num_sym_angmom = atom_information.strip().split()
+                        # check if it contains two or three elements
+                        if len(atom_num_sym_angmom) == 2:
+                            atom_number, atom_symbol = atom_num_sym_angmom
+                        elif len(atom_num_sym_angmom) == 3:
+                            atom_number, atom_symbol, _ = atom_num_sym_angmom
                         atom_number = int(atom_number)
                         if atom_number >= nat - 1:
                             last_atom = True
@@ -456,12 +466,14 @@ def parse_mulliken_reduced_orbital_charges(
     return populations
 
 
-def generate_orca_input(qvSZP_args: str):
+def generate_orca_input(qvSZP_args: str, addtional_arguments: list[str]) -> None:
     """
     Generate the ORCA input file from the given structure file.
     """
     binary = "qvSZP"
     arguments = [arg for arg in qvSZP_args.split() if arg != ""]
+    if addtional_arguments:
+        arguments.extend(addtional_arguments)
     print(f"Running command-line call: {binary} {' '.join(arguments)}")
     # run command via subprocess, write the output to qvSZP.out and the error to qvSZP.err
     with open("qvSZP.out", "w") as out, open("qvSZP.err", "w") as err:
@@ -514,10 +526,17 @@ def get_args() -> ap.Namespace:
         required=False,
         help="Print the content of the ORCA output and error files.",
     )
+    parser.add_argument(
+        "--multifwfnfile",
+        "-mwfnf",
+        type=str,
+        required=False,
+        help="Path to the Multiwfn output file.",
+    )
     return parser.parse_args()
 
 
-def convert_orca_output(orca_output_file: Path, openshell: bool) -> str:
+def convert_orca_output(orca_output_file: Path, openshell: bool) -> None:
     """
     Parse the ORCA output file and extract relevant information.
 
@@ -650,7 +669,40 @@ def convert_orca_output(orca_output_file: Path, openshell: bool) -> str:
     # write the TM output file
     write_tm_mulliken(populations, "tm.out", openshell)
 
-    return ""
+
+def parse_multiwfn_output(mwfnf: str | Path) -> list[float]:
+    """
+    Args:
+        mwfnf: str | Path
+
+    Return:
+        atomic_charges:  list[float]
+
+    ------
+    multiwfn.chg looks as follows:
+    C     0.000000    0.000000    0.316085  -0.0083631036
+    N     0.000000    0.000000    1.476008  -0.1995613116
+    At    0.000000    0.000000   -1.792093   0.2079244152
+    """
+    if isinstance(mwfnf, str):
+        mwfnf = Path(mwfnf)
+    mwfnf.resolve()
+    if not mwfnf.is_file():
+        raise FileNotFoundError(f"Multiwfn output file '{mwfnf}' not found.")
+    with open(mwfnf, "r", encoding="utf8") as mwfn_out:
+        mwfn_content = mwfn_out.read()
+    # split the content by lines
+    lines = mwfn_content.split("\n")
+    # iterate over the lines
+    atomic_charges = []
+    for line in lines:
+        # check if the line is empty
+        if line.strip() == "":
+            continue
+        # split the line by whitespace
+        charge = line.split()[4]
+        atomic_charges.append(float(charge))
+    return atomic_charges
 
 
 def main():
@@ -660,8 +712,20 @@ def main():
     # call the argument parser
     args = get_args()
 
+    add_args: list[str] = []
+    # if mwfnf is given, parse the Multiwfn output file
+    if args.multifwfnfile is not None:
+        atomic_charges = parse_multiwfn_output(args.multifwfnfile)
+        charge_args = ["--cm", "extonlyq"]
+        add_args.extend(charge_args)
+        print(f"Atomic charges from 'multiwfn.chg' or similar:\n{atomic_charges}")
+        # write charges to a file "ext.charges" (just one float per line)
+        with open("ext.charges", "w", encoding="utf8") as ext_out:
+            for charge in atomic_charges:
+                ext_out.write(f"{charge}\n")
+
     # generate the ORCA input file
-    generate_orca_input(args.qvSZP)
+    generate_orca_input(args.qvSZP, add_args)
 
     # check if "--outname" is contained in args.qvSZP
     # if yes, take the value after "--outname" as the ORCA input file name
@@ -697,7 +761,7 @@ def main():
             print("ORCA error file:")
             print(orca_err.read())
 
-    tm_output = convert_orca_output(orca_output_file, openshell)
+    convert_orca_output(orca_output_file, openshell)
 
 
 if __name__ == "__main__":
