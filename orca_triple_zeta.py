@@ -185,10 +185,13 @@ def execute_orca(orca_input: Path) -> tuple[Path, Path]:
     orca_output_file = Path("orca.out").resolve()
     orca_error_file = Path("orca.err").resolve()
     print(f"Running ORCA with input file '{orca_input}'")
-    with open(orca_output_file, "w", encoding="utf8") as out, open(
-        orca_error_file, "w", encoding="utf8"
-    ) as err:
-        sp.run([orca_path, orca_input], stdout=out, stderr=err, check=True)
+    try:
+        with open(orca_output_file, "w", encoding="utf8") as out, open(
+            orca_error_file, "w", encoding="utf8"
+        ) as err:
+            sp.run([orca_path, orca_input], stdout=out, stderr=err, check=True)
+    except sp.CalledProcessError as e:
+        raise ValueError(f"ORCA did not terminate normally: {e}") from e
 
     return orca_output_file, orca_error_file
 
@@ -219,7 +222,7 @@ def write_orca_input(
     return orca_input
 
 
-def get_chrg_uhf() -> tuple[int, int]:
+def get_chrg_uhf(nel_orig: int) -> tuple[int, int]:
     """
     Get the charge and multiplicity from the .CHRG and .UHF files.
 
@@ -231,15 +234,24 @@ def get_chrg_uhf() -> tuple[int, int]:
     if Path(".CHRG").is_file():
         with open(".CHRG", "r", encoding="utf8") as f:
             chrg = int(f.readline().strip())
+            print("Charge from '.CHRG' file:", chrg)
     else:
         chrg = 0
+
+    # get the number of electrons
+    nel = nel_orig - chrg
 
     # read the multiplicity from the .UHF file if it exists
     if Path(".UHF").is_file():
         with open(".UHF", "r", encoding="utf8") as f:
             uhf = int(f.readline().strip())
+            print(f"UHF from '.UHF' file: {uhf}")
     else:
-        uhf = 0
+        if nel % 2 == 0:
+            uhf = 0
+        else:
+            print("Odd number of electrons detected. Setting UHF to 1.")
+            uhf = 1
 
     return chrg, uhf
 
@@ -468,10 +480,8 @@ def main():
     symbols: list[str] = []
     xyz: list[list[float]] = []
     with open("struc.xyz", "r", encoding="utf8") as f:
-        firstline = True
-        for line in f:
-            if firstline:
-                firstline = False
+        for i, line in enumerate(f):
+            if i < 2:
                 continue
             if line.strip() == "":
                 continue
@@ -485,8 +495,11 @@ def main():
                 else:
                     heavy_atoms.append(PSE_NUMBERS[symbol])
 
+    # get number of electrons
+    nel_raw = sum(ati)
+
     # get the charge and multiplicity from the .CHRG and .UHF files
-    chrg, uhf = get_chrg_uhf()
+    chrg, uhf = get_chrg_uhf(nel_raw)
 
     orca_input_file = write_orca_input(args.mpi, chrg, uhf, heavy_atoms)
 

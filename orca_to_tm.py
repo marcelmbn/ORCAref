@@ -7,9 +7,12 @@ Python script to conduct the following job.
 """
 
 from pathlib import Path
+import shutil as sh
 import argparse as ap
 import subprocess as sp
 
+AU2AA = 0.529177210544
+AA2AU = 1.0 / AU2AA
 PSE = {
     0: "X",
     1: "H",
@@ -500,8 +503,11 @@ def execute_orca(orca_input: Path) -> tuple[Path, Path]:
     orca_output_file = Path("orca.out").resolve()
     orca_error_file = Path("orca.err").resolve()
     print(f"Running ORCA with input file '{orca_input}'")
-    with open(orca_output_file, "w") as out, open(orca_error_file, "w") as err:
-        sp.run([orca_path, orca_input], stdout=out, stderr=err, check=True)
+    try:
+        with open(orca_output_file, "w") as out, open(orca_error_file, "w") as err:
+            sp.run([orca_path, orca_input], stdout=out, stderr=err, check=True)
+    except sp.CalledProcessError as e:
+        raise ValueError(f"ORCA did not terminate normally: {e}") from e
 
     return orca_output_file, orca_error_file
 
@@ -727,6 +733,78 @@ def main():
         with open("ext.charges", "w", encoding="utf8") as ext_out:
             for charge in atomic_charges:
                 ext_out.write(f"{charge}\n")
+
+    # check if "--struc" is contained in args.qvSZP
+    # if yes, take the value after "--struc" as the structure file
+    if "--struc" in args.qvSZP:
+        struc_file = Path(args.qvSZP.split("--struc")[1].split()[0].strip()).resolve()
+    else:
+        struc_file = Path("coord").resolve()
+    if not struc_file.is_file():
+        print(f"Structure file '{struc_file}' not found. Trying 'coord' file.")
+        raise FileNotFoundError(f"Structure file '{struc_file}' not found.")
+
+    tmp_file = "struc.bak.xyz"
+    # convert coord file to xyz file, if necessary
+    if struc_file.name == "coord":
+        sp.run(
+            [
+                "mctc-convert",
+                "-i",
+                "coord",
+                "-o",
+                "xyz",
+                "coord",
+                tmp_file,
+                "--normalize",
+            ],
+            check=True,
+        )
+    # elif args.structure is of type xyz (ends with .xyz), then copy it to struc.bak.xyz
+    elif struc_file.suffix == ".xyz":
+        sh.copy(struc_file, tmp_file)
+    else:
+        raise ValueError("Unknown structure file type.")
+
+    ati: list[int] = []
+    symbols: list[str] = []
+    xyz: list[list[float]] = []
+    with open(tmp_file, "r", encoding="utf8") as f:
+        for i, line in enumerate(f):
+            if i < 2:
+                continue
+            if line.strip() == "":
+                continue
+            symbol = line.split()[0].lower()
+            symbols.append(symbol)
+            xyz.append([float(x) * AA2AU for x in line.split()[1:]])
+            ati.append(PSE_NUMBERS[symbol])
+
+    # check if .CHRG file is present. If yes, read the total charge from it.
+    chargeset = False
+    if Path(".CHRG").is_file():
+        with open(".CHRG", "r") as chrg_file:
+            charge = int(chrg_file.read().strip())
+        print(f"Total charge from '.CHRG' file: {charge}")
+        chargeset = True
+    # same with .UHF file
+    uhfset = False
+    if Path(".UHF").is_file():
+        with open(".UHF", "r") as uhf_file:
+            uhf = int(uhf_file.read().strip())
+        print(f"Total spin from '.UHF' file: {uhf}")
+        uhfset = True
+    else:
+        # sum up the atomic numbers (sum of ati array)
+        nel = sum(ati)
+        if chargeset:
+            # subtract the total charge from the sum of atomic numbers
+            nel -= charge
+        # check if odd
+        if nel % 2 == 1:
+            uhf = 1
+            add_args.extend(["--uhf", "1"])
+            print("Odd number of electrons detected. Setting UHF to 1.")
 
     # generate the ORCA input file
     generate_orca_input(args.qvSZP, add_args)
