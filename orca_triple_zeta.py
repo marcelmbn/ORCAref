@@ -156,6 +156,12 @@ def get_args() -> ap.Namespace:
         default=1,
         help="Number of MPI processes to use.",
     )
+    parser.add_argument(
+        "--orca_hirshfeld",
+        action="store_true", 
+        required=False,
+        help="Use ORCA internal Hirshfeld charges.",
+    )
     # positional argument for the structure file
     parser.add_argument(
         "structure",
@@ -329,6 +335,61 @@ def write_multiwfn_charges(
             f.write(
                 f"{PSE[ati[i]]:>2} {xyz[i][0]:>14.8f} {xyz[i][1]:>14.8f} {xyz[i][2]:>14.8f} {charge:>14.8f}\n"
             )
+
+
+def get_multiwfn_hirshfeld() -> tuple[Path, Path, Path]:
+    """
+    Execute MultiWFN for Hirshfeld Charges.
+    """
+
+    # check full path of the ORCA binary (which is in the PATH)
+    orca_2mkl_path = sp.run(
+        ["which", "orca_2mkl"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    print(f"ORCA_2MKL path: {orca_2mkl_path}")
+
+    # convert ORCA gbw file to molden format
+    multiwfn_charge_file = Path("multiwfn.chg").resolve()
+    multiwfn_output_file = Path("multiwfn.out").resolve()
+    multiwfn_error_file = Path("multiwfn.err").resolve()
+    print(f"Running ORCA_2MKL")
+    try:
+        with open(multiwfn_output_file, "w", encoding="utf8") as out, open(
+            multiwfn_error_file, "w", encoding="utf8"
+        ) as err:
+            sp.run([orca_2mkl_path, "tz", "-molden"], stdout=out, stderr=err, check=True)
+    except sp.CalledProcessError as e:
+        raise ValueError(f"ORCA_2MKL did not terminate normally: {e}") from e
+    
+    # check full path of the Multiwfn binary (which is in the PATH)
+    multiwfn_path = sp.run(
+        ["which", "Multiwfn"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    print(f"Multiwfn path: {multiwfn_path}")
+
+    # Create 'inp' file with specified inputs
+    with open("inp", "w") as multiwfn_input_file:
+        multiwfn_input_file.write("7\n1\n1\ny\n0\n9\n1\nn\n0\nq\n")
+
+    # run Multiwfn for Hirshfeld charges 
+    try:
+        with open("inp", "r") as inp, open(multiwfn_output_file, "w", encoding="utf8") as out, open(
+            multiwfn_error_file, "w", encoding="utf8"
+        ) as err:
+            sp.run([multiwfn_path, "tz.molden.input", "-nt", "8"], stdin=inp, stdout=out, stderr=err, check=True)
+    except sp.CalledProcessError as e:
+        raise ValueError(f"Multiwfn did not terminate normally: {e}") from e
+    
+    # Move the generated Hirshfeld charges file to multiwfn.chg
+    try: 
+        sh.move("tz.chg", "multiwfn.chg")    
+    except: 
+        raise ValueError("Multiwfn did not generate the Hirshfeld charges file.")
+    
+    return multiwfn_charge_file, multiwfn_output_file, multiwfn_error_file
+
 
 
 def write_control_file(energy: float, dipole: list[float]) -> None:
@@ -509,11 +570,21 @@ def main():
         if "ORCA TERMINATED NORMALLY" not in orca_out.read():
             raise ValueError("ORCA did not terminate normally.")
 
-    # parse the Hirshfeld charges from the ORCA output file
-    charges = parse_hirshfeld(orca_output_file)
-    print(f"Hirshfeld charges: {charges}")
-    # write charges to multiwfn.chg
-    write_multiwfn_charges(charges, ati, xyz)
+
+    if (args.orca_hirshfeld):
+        # parse the Hirshfeld charges from the ORCA output file
+        charges = parse_hirshfeld(orca_output_file)
+        print(f"Hirshfeld charges: {charges}")
+        # write charges to multiwfn.chg
+        write_multiwfn_charges(charges, ati, xyz)
+    else: 
+        # Do Hirshfeld population analysis with Multiwfn
+        multiwfn_charge_file, _, _ = get_multiwfn_hirshfeld()
+        charges = []
+        with open(multiwfn_charge_file, "r", encoding="utf8") as multiwfn_out:
+            for line in multiwfn_out:
+               charges.append(float(line.split()[4]))
+        print(f"Hirshfeld charges: {charges}")
 
     # parse energy from ORCA output file
     energy: float | None = None
