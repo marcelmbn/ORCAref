@@ -214,13 +214,15 @@ def write_orca_input(
         f.write("! NoTRAH NoSOSCF\n")
         f.write("! StrongSCF DefGrid3\n")
         f.write("! EnGrad\n")
+        f.write("! PrintBasis\n")
         if heavy_ati:
             f.write("! AutoAux\n")
         f.write(f"%pal\n   nprocs {mpi}\nend\n")
         if heavy_ati:
             f.write("%basis\n")
             for heavy_atom in heavy_ati:
-                f.write(f'   NewGTO  {PSE[heavy_atom]} "ma-def-TZVP" end\n')
+                f.write(f'   NewGTO  {PSE[heavy_atom]} "def-TZVP" end\n')
+                f.write(f'   NewECP  {PSE[heavy_atom]} "def-ECP" end\n')
             f.write("end\n")
         f.write(f"%scf\n   maxiter 500\nend\n")
         f.write("%output\n   Print[P_Hirshfeld] 1\nend\n")
