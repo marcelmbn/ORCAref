@@ -1041,6 +1041,8 @@ class ORCA:
         orca_input += "\tPrint[ P_Basis ]      1  # basis set information\n"
         orca_input += "\tPrint[ P_Mayer ]      0  # Mayer population analysis\n"
         orca_input += "\tPrint[ P_Loewdin ]    0  # Loewdin population analysis\n"
+        orca_input += "\tPrint[ P_Hirshfeld ]  1  # Hirshfeld density analysis\n"
+
         orca_input += "end\n"
 
         orca_input += f"* xyzfile {molecule.charge} {molecule.uhf + 1} {xyzfile}\n"
@@ -1152,12 +1154,16 @@ def calculate_spin_state(orca: ORCA, mol: Molecule, calc_dir: Path, verbosity: i
         orca_output = orca.singlepoint(mol, calc_dir, verbosity=verbosity)
         total_energy = parse_orca_energy(orca_output)
         if verbosity > 1:
-            print(f" \tORCA calculation successful. Energy: {total_energy}")
+            print(
+                f" \tORCA calculation in '{calc_dir.name}' successful. Energy: {total_energy}"
+            )
     except RuntimeError as e:
         print(f"Error in ORCA calculation: {e}")
         total_energy = 0.0
         if verbosity > 1:
-            print(" \tORCA alculation failed. Setting energy to zero.")
+            print(
+                f" \tORCA calculation '{calc_dir.name}' failed. Setting energy to zero."
+            )
     return total_energy
 
 
@@ -1211,18 +1217,22 @@ def process_molecule_directory(
         mol_dir = target_dir / molecule.name
         mol_dir.mkdir(parents=True, exist_ok=True)
 
+        # deep copy of original UHF value
+        original_uhf = copy.deepcopy(molecule.uhf)
+
         # Perform ORCA calculations
-        if molecule.uhf > 0:
-            if arguments.verbosity > 0:
-                print(
-                    "Molecule has unpaired electrons. "
-                    + "Performing closed-shell and open-shell calculations..."
-                )
-            try:
+        try:
+            if molecule.uhf > 0:
+                if arguments.verbosity > 0:
+                    print(
+                        "Molecule has unpaired electrons. "
+                        + "Performing closed-shell and open-shell calculations..."
+                    )
                 tmp_molecule = molecule.copy()
-                tmp_molecule.uhf -= (
+                closed_shell_uhf = tmp_molecule.uhf - (
                     1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
-                )  # number of electrons varies by the number of elements exchanged
+                )
+                tmp_molecule.uhf = closed_shell_uhf
                 if tmp_molecule.uhf < 0:
                     print("We cannot assign a negative number of unpaired electrons.")
                     closed_shell_energy = 0.0
@@ -1231,67 +1241,68 @@ def process_molecule_directory(
                     closed_shell_energy = calculate_spin_state(
                         orca, tmp_molecule, calc_dir, verbosity=arguments.verbosity
                     )
-                tmp_molecule = molecule.copy()
-                tmp_molecule.uhf += (
-                    1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
-                )  # number of electrons varies by the number of elements exchanged
-                if tmp_molecule.uhf > calculate_f_electrons(tmp_molecule.atlist):
+            else:
+                closed_shell_energy = None
+                if arguments.verbosity > 0:
                     print(
-                        f"\tNumber of unpaired electrons ({tmp_molecule.uhf}) in the molecule is larger than "
-                        + f"the calculated number of f and d electrons ({calculate_f_electrons(tmp_molecule.atlist)})."
+                        "Molecule has no unpaired electrons. Performing only the open-shell calculation..."
                     )
-                    open_shell_energy = 0.0
-                else:
-                    calc_dir = mol_dir / "open_shell"
-                    open_shell_energy = calculate_spin_state(
-                        orca, tmp_molecule, calc_dir, verbosity=arguments.verbosity
-                    )
+            tmp_molecule = molecule.copy()
+            open_shell_uhf = tmp_molecule.uhf + (
+                1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
+            )  # number of electrons varies by the number of elements exchanged
+            tmp_molecule.uhf = open_shell_uhf
+            if tmp_molecule.uhf > calculate_f_electrons(tmp_molecule.atlist):
+                print(
+                    f"\tNumber of unpaired electrons ({tmp_molecule.uhf}) in the molecule is larger than "
+                    + f"the calculated number of f and d electrons ({calculate_f_electrons(tmp_molecule.atlist)})."
+                )
+                open_shell_energy = 0.0
+            else:
+                calc_dir = mol_dir / "open_shell"
+                open_shell_energy = calculate_spin_state(
+                    orca, tmp_molecule, calc_dir, verbosity=arguments.verbosity
+                )
+
+            # In this step, final energy and UHF are assigned
+            if molecule.uhf > 0:
                 # if both energies are zero, skip the molecule
                 if closed_shell_energy == 0.0 and open_shell_energy == 0.0:
                     raise ValueError("Both closed-shell and open-shell energies failed")
 
-                preferred_uhf = (
-                    molecule.uhf - 1
-                    if closed_shell_energy < open_shell_energy
-                    else molecule.uhf + 1
+                molecule.uhf = (
+                    closed_shell_uhf
+                    if closed_shell_energy < open_shell_energy  # type: ignore
+                    else open_shell_uhf
                 )
-                molecule.energy = min(closed_shell_energy, open_shell_energy)
+                molecule.energy = min(closed_shell_energy, open_shell_energy)  # type: ignore
 
                 if arguments.verbosity > 0:
                     print(f"Molecule: {molecule.name}")
                     print(f"  Closed-shell energy: {closed_shell_energy}")
                     print(f"  Open-shell energy: {open_shell_energy}")
-                    print(
-                        f"  Preferred UHF: {preferred_uhf}, Energy: {molecule.energy}"
-                    )
-            except ValueError as e:
-                print(f"No energy evaluation succesful: {e}")
-                print(f"Skipping molecule {molecule.name}...")
-                continue
-        else:
-            if arguments.verbosity > 0:
-                print(
-                    "Molecule has no unpaired electrons. Performing only the open-shell calculation..."
-                )
-            molecule.uhf += (
-                1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
-            )  # number of electrons varies by the number of elements exchanged
-            calc_dir = mol_dir / "open_shell"
-            molecule.energy = calculate_spin_state(
-                orca, molecule, calc_dir, verbosity=arguments.verbosity
-            )
-            if molecule.energy == 0.0:
-                print("No energy evaluation succesful. Skipping molecule...")
-                continue
+                    print(f"  Preferred UHF: {molecule.uhf}, Energy: {molecule.energy}")
+            else:
+                if open_shell_energy == 0.0:
+                    raise ValueError("Only available open-shell calculation failed.")
+                molecule.energy = open_shell_energy
+                molecule.uhf = open_shell_uhf
+                if arguments.verbosity > 0:
+                    print(f"Molecule: {molecule.name}")
+                    print(f"  Open-shell energy: {molecule.energy}")
+        except ValueError as e:
+            print(f"No energy evaluation succesful: {e}")
+            print(f"Skipping molecule {molecule.name}...")
+            continue
+
         # write the molecule to the target directory
-        molecule.uhf = preferred_uhf
         molecule.write_xyz_to_file(mol_dir / "struc.xyz")
         molecule.write_coord_to_file(mol_dir / "coord")
         # copy GBW file from preferred calculation to the target directory
-        if preferred_uhf > 0:
-            gbw_file = mol_dir / "open_shell" / "orca.gbw"
-        else:
+        if original_uhf > 0 and closed_shell_energy < open_shell_energy:  # type: ignore
             gbw_file = mol_dir / "closed_shell" / "orca.gbw"
+        else:
+            gbw_file = mol_dir / "open_shell" / "orca.gbw"
         sh.copy(gbw_file, mol_dir / "orca.gbw")
         successful_molecules.append(molecule)
 
