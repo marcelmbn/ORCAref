@@ -140,6 +140,157 @@ PSE_NUMBERS: dict[str, int] = {k.lower(): v for v, k in PSE.items()}
 PSE_SYMBOLS: dict[int, str] = {v: k.lower() for v, k in PSE.items()}
 
 
+def get_lanthanides() -> list[int]:
+    """
+    Get the atomic numbers of lanthanides.
+    """
+    lanthanides = list(range(56, 71))
+    return lanthanides
+
+
+def get_actinides() -> list[int]:
+    """
+    Get the atomic numbers of actinides.
+    """
+    actinides = list(range(88, 103))
+    return actinides
+
+
+def check_if_neighbours(source_elem: str, target_elem: str) -> bool:
+    """
+    Check if the source and target elements are neighbours in the periodic table.
+    """
+    source_idx = PSE_NUMBERS[source_elem.lower()]
+    target_idx = PSE_NUMBERS[target_elem.lower()]
+    if abs(source_idx - target_idx) == 1:
+        return True
+    return False
+
+
+def calculate_f_electrons(atlist: np.ndarray) -> int:
+    """
+    Calculate the number of unpaired electrons in a molecule.
+    """
+    f_electrons = 0
+    for ati, occurrence in enumerate(atlist):
+        if ati in get_lanthanides():
+            f_electrons += (ati - 55) * occurrence
+        elif ati in get_actinides():
+            f_electrons += (ati - 87) * occurrence
+    return f_electrons
+
+
+def parse_orca_hirshfeld(orca_out: str) -> list[float]:
+    """
+    Parse the Hirshfeld charges from the ORCA output file.
+
+    Relevant ORCA output lines:
+    ...
+
+    ------------------
+    HIRSHFELD ANALYSIS
+    ------------------
+
+    Total integrated alpha density =     56.999694904
+    Total integrated beta density  =     55.999695584
+
+      ATOM     CHARGE      SPIN
+       0 O   -2.528834    0.057977
+       1 C   -0.253541    0.005754
+       2 C   -0.032957    0.010477
+       3 H    0.090152    0.000918
+       4 H    0.158754    0.002076
+       5 H    0.135321    0.001610
+       6 H    0.103791    0.010221
+       7 H    0.052870    0.004086
+       8 Th   4.275053    0.906880
+
+      TOTAL   2.000610    0.999999
+
+    -------
+    TIMINGS
+    -------
+    ...
+
+    Args:
+        file (Path): Path to the ORCA output file.
+
+    Returns:
+        list[int]: List of Hirshfeld charges.
+    """
+    charges: list[float] = []
+    lines = orca_out.split("\n")
+    for i, line in enumerate(lines):
+        if "HIRSHFELD ANALYSIS" in line:
+            # start reading the Hirshfeld charges
+            for j in range(i + 7, len(lines)):
+                if lines[j].strip() == "":
+                    continue
+                if "TOTAL" in lines[j]:
+                    break
+                charges.append(float(lines[j].split()[2]))
+    return charges
+
+
+def parse_orca_gradient(orca_out: str) -> list[list[float]]:
+    """
+    Parse the gradient from the ORCA output file:
+    ------------------
+    CARTESIAN GRADIENT
+    ------------------
+
+       1   O   :    0.006350291   -0.008440957   -0.003357480
+       2   C   :   -0.008161812    0.003870253   -0.001779037
+       3   C   :    0.006660876    0.003069053    0.001391212
+       4   H   :   -0.000383006   -0.000387866    0.003712008
+       5   H   :   -0.000792639    0.000124760   -0.002592300
+       6   H   :   -0.002657347    0.000481362   -0.000513059
+       7   H   :   -0.000557464   -0.000925923    0.000833975
+       8   H   :   -0.001010191   -0.000685303   -0.001139491
+       9   H   :    0.000551291    0.002894622    0.003444172
+
+    Args:
+        file (Path): Path to the ORCA output file.
+    """
+
+    gradient: list[list[float]] = []
+    lines = orca_out.split("\n")
+    for i, line in enumerate(lines):
+        if "CARTESIAN GRADIENT" in line:
+            # start reading the gradient
+            for j in range(i + 3, len(lines)):
+                if lines[j].strip() == "":
+                    break
+                gradient.append([float(x) for x in lines[j].split()[3:]])
+    return gradient
+
+
+def parse_orca_energy(orca_out: str) -> float:
+    """
+    Parse the ORCA output to get the final energy.
+    """
+    for line in orca_out.split("\n"):
+        if "FINAL SINGLE POINT ENERGY" in line:
+            energy = float(line.split()[4])
+            return energy
+    raise ValueError("Energy not found in ORCA output.")
+
+
+def parse_orca_dipole(orca_out: str) -> list[float]:
+    """
+    Parse the ORCA output to get the dipole moment.
+    """
+    dipole: list[float] | None = None
+    for line in orca_out.split("\n"):
+        # Total Dipole Moment    :      0.517831297       0.043824204       0.411962740
+        if "Total Dipole Moment" in line:
+            dipole = [float(x) for x in line.split()[4:]]
+            break
+    if dipole is None:
+        raise ValueError("Dipole moment not found in ORCA output.")
+    return dipole
+
+
 class Molecule:
     """
     A class representing a molecule.
@@ -826,7 +977,7 @@ class ORCA:
     This class handles all interaction with the ORCA external dependency.
     """
 
-    def __init__(self, path: str | Path, ncores: int = 1) -> None:
+    def __init__(self, path: str | Path, ncores: int = 1, maxcore: int = 4000) -> None:
         """
         Initialize the ORCA class.
         """
@@ -837,6 +988,7 @@ class ORCA:
         else:
             raise TypeError("orca_path should be a string or a Path object.")
         self.ncores = ncores
+        self.maxcore = maxcore
 
     def optimize(
         self, molecule: Molecule, tmp_path: str | Path, verbosity: int = 1
@@ -1015,15 +1167,16 @@ class ORCA:
         """
         Generate a default input file for ORCA.
         """
-        orca_input = "! wB97M-V def2-TZVPPD\n"
+        orca_input = "! wB97M-V def2-TZVPPD EnGrad\n"
         orca_input += "! StrongSCF DEFGRID3\n"
-        orca_input += "! NoTRAH \n"
+        orca_input += "! NoTRAH\n"
         orca_input += "! PrintBasis\n"
         if optimization:
             orca_input += "! OPT\n"
         if any(atom >= 86 for atom in molecule.ati):
             orca_input += "! AutoAux\n"
         orca_input += f"%pal nprocs {self.ncores} end\n"
+        orca_input += f"%maxcore {self.maxcore}\n"
         # "! AutoAux" keyword for super-heavy elements as def2/J ends at Rn
         if any(atom >= 86 for atom in molecule.ati):
             orca_input += "%basis\n"
@@ -1035,14 +1188,13 @@ class ORCA:
                 orca_input += f'\tNewECP  {PSE[heavy_atom]} "def-ECP" end\n'
             orca_input += "end\n"
         orca_input += "%scf\n\tMaxIter 500\nend\n"
+        orca_input += "%elprop\n\tOrigin 0.0,0.0,0.0\nend\n"
         orca_input += "%output\n"
         orca_input += "\tPrint[ P_Internal ]   0  # internal coordinates\n"
         orca_input += "\tPrint[ P_OrbEn ]      1  # orbital energies\n"
-        orca_input += "\tPrint[ P_Basis ]      1  # basis set information\n"
         orca_input += "\tPrint[ P_Mayer ]      0  # Mayer population analysis\n"
         orca_input += "\tPrint[ P_Loewdin ]    0  # Loewdin population analysis\n"
         orca_input += "\tPrint[ P_Hirshfeld ]  1  # Hirshfeld density analysis\n"
-
         orca_input += "end\n"
 
         orca_input += f"* xyzfile {molecule.charge} {molecule.uhf + 1} {xyzfile}\n"
@@ -1074,17 +1226,6 @@ def get_orca_path(binary_name: str | Path | None = None) -> Path:
     raise ImportError("'orca' binary could not be found.")
 
 
-def parse_orca_energy(output: str) -> float:
-    """
-    Parse the ORCA output to get the final energy.
-    """
-    for line in output.split("\n"):
-        if "FINAL SINGLE POINT ENERGY" in line:
-            energy = float(line.split()[4])
-            return energy
-    raise ValueError("Energy not found in ORCA output.")
-
-
 def convert_actinide(inp_mol: Molecule, source: str, target: str) -> Molecule:
     """
     Convert the actinide element in the molecule to the target element.
@@ -1104,46 +1245,6 @@ def convert_actinide(inp_mol: Molecule, source: str, target: str) -> Molecule:
     inp_mol.name = inp_mol.name.replace(source.lower(), target.lower())
     inp_mol.name = inp_mol.name.replace(source.upper(), target.upper())
     return inp_mol
-
-
-def get_lanthanides() -> list[int]:
-    """
-    Get the atomic numbers of lanthanides.
-    """
-    lanthanides = list(range(56, 71))
-    return lanthanides
-
-
-def get_actinides() -> list[int]:
-    """
-    Get the atomic numbers of actinides.
-    """
-    actinides = list(range(88, 103))
-    return actinides
-
-
-def calculate_f_electrons(atlist: np.ndarray) -> int:
-    """
-    Calculate the number of unpaired electrons in a molecule.
-    """
-    f_electrons = 0
-    for ati, occurrence in enumerate(atlist):
-        if ati in get_lanthanides():
-            f_electrons += (ati - 55) * occurrence
-        elif ati in get_actinides():
-            f_electrons += (ati - 87) * occurrence
-    return f_electrons
-
-
-def check_if_neighbours(source_elem: str, target_elem: str) -> bool:
-    """
-    Check if the source and target elements are neighbours in the periodic table.
-    """
-    source_idx = PSE_NUMBERS[source_elem.lower()]
-    target_idx = PSE_NUMBERS[target_elem.lower()]
-    if abs(source_idx - target_idx) == 1:
-        return True
-    return False
 
 
 def calculate_spin_state(orca: ORCA, mol: Molecule, calc_dir: Path, verbosity: int):
@@ -1173,7 +1274,7 @@ def process_molecule_directory(
     """
     Process a directory of molecules.
     """
-    orca = ORCA(path=get_orca_path(), ncores=arguments.mpi)
+    orca = ORCA(path=get_orca_path(), ncores=arguments.mpi, maxcore=arguments.maxcore)
     target_dir = arguments.output / arguments.target.capitalize()
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1237,9 +1338,12 @@ def process_molecule_directory(
                     print("We cannot assign a negative number of unpaired electrons.")
                     closed_shell_energy = 0.0
                 else:
-                    calc_dir = mol_dir / "closed_shell"
+                    closed_shell_dir = mol_dir / "closed_shell"
                     closed_shell_energy = calculate_spin_state(
-                        orca, tmp_molecule, calc_dir, verbosity=arguments.verbosity
+                        orca,
+                        tmp_molecule,
+                        closed_shell_dir,
+                        verbosity=arguments.verbosity,
                     )
             else:
                 closed_shell_energy = None
@@ -1259,9 +1363,9 @@ def process_molecule_directory(
                 )
                 open_shell_energy = 0.0
             else:
-                calc_dir = mol_dir / "open_shell"
+                open_shell_dir = mol_dir / "open_shell"
                 open_shell_energy = calculate_spin_state(
-                    orca, tmp_molecule, calc_dir, verbosity=arguments.verbosity
+                    orca, tmp_molecule, open_shell_dir, verbosity=arguments.verbosity
                 )
 
             # In this step, final energy and UHF are assigned
@@ -1279,9 +1383,9 @@ def process_molecule_directory(
 
                 if arguments.verbosity > 0:
                     print(f"Molecule: {molecule.name}")
-                    print(f"  Closed-shell energy: {closed_shell_energy}")
-                    print(f"  Open-shell energy: {open_shell_energy}")
-                    print(f"  Preferred UHF: {molecule.uhf}, Energy: {molecule.energy}")
+                    print(f"\tClosed-shell energy: {closed_shell_energy}")
+                    print(f"\tOpen-shell energy: {open_shell_energy}")
+                    print(f"\tPreferred UHF: {molecule.uhf}, Energy: {molecule.energy}")
             else:
                 if open_shell_energy == 0.0:
                     raise ValueError("Only available open-shell calculation failed.")
@@ -1289,7 +1393,7 @@ def process_molecule_directory(
                 molecule.uhf = open_shell_uhf
                 if arguments.verbosity > 0:
                     print(f"Molecule: {molecule.name}")
-                    print(f"  Open-shell energy: {molecule.energy}")
+                    print(f"\tOpen-shell energy: {molecule.energy}")
         except ValueError as e:
             print(f"No energy evaluation succesful: {e}")
             print(f"Skipping molecule {molecule.name}...")
@@ -1300,10 +1404,10 @@ def process_molecule_directory(
         molecule.write_coord_to_file(mol_dir / "coord")
         # copy GBW file from preferred calculation to the target directory
         if original_uhf > 0 and closed_shell_energy < open_shell_energy:  # type: ignore
-            gbw_file = mol_dir / "closed_shell" / "orca.gbw"
+            lowest_dir = closed_shell_dir
         else:
-            gbw_file = mol_dir / "open_shell" / "orca.gbw"
-        sh.copy(gbw_file, mol_dir / "orca.gbw")
+            lowest_dir = open_shell_dir
+        postprocess_molecule(molecule, lowest_dir, "orca_log.out", arguments.verbosity)
         successful_molecules.append(molecule)
 
     if arguments.verbosity > 0:
@@ -1322,6 +1426,141 @@ def process_molecule_directory(
     print(
         f"List of successful molecules written to '{target_dir.resolve()}/fitmolecules.csv'"
     )
+
+
+def write_tm_control_file(
+    energy: float, dipole: list[float], filename: str | Path = "control"
+):
+    """
+    Write the control file for the TM output:
+    $subenergy  Etot         E1                  Ej Ex                 Ec                 En
+    -39.46273594172    -67.82138813233     23.07494182535 0.000000000000     0.000000000000     9.469652916458
+    $charge from ridft
+              1.000 (not to be modified here)
+    $dipole from ridft
+      x     0.00010248934969    y     0.00002281403674    z 0.00000000000132    a.u.
+
+    Args:
+        energy (float): Total energy.
+        dipole (list[float]): Dipole moment.
+    """
+    with open(filename, "w", encoding="utf8") as f:
+        f.write(
+            "$subenergy  Etot         E1                  Ej Ex                 Ec                 En\n"
+        )
+        f.write(
+            f"{energy:>20.11f}    {0.0:>20.11f}     {0.0:>20.11f} {0.0:>20.11f}     {0.0:>20.11f}     {0.0:>20.11f}\n"
+        )
+        f.write("$dipole from ridft\n")
+        f.write(
+            f"  x     {dipole[0]:>20.11f}    y     {dipole[1]:>20.11f}    z {dipole[2]:>20.11f}    a.u.\n"
+        )
+
+
+def write_tm_gradient(
+    gradient: list[list[float]],
+    xyz: list[list[float]],
+    symbols: list[str],
+    energy: float,
+    filename: str | Path = "gradient",
+) -> None:
+    """
+    Write the gradient to a TM gradient file:
+    $grad
+      cycle =      1    SCF energy =   -11.39433809450   |dE/dxyz| =  0.000206
+       -2.28377308081965      0.47888412430551      0.00986135744064      O
+       -0.09355866925134     -1.03299913689694      0.03099565440194      C
+        2.33481276207902      0.51910811867711      0.01027690268576      C
+       -0.10639904570851     -2.29577204625936      1.68367916569539      H
+       -0.21650182663134     -2.19216842346259     -1.67256392109945      H
+        3.96453468532290     -0.72683368189313     -0.07332130313004      H
+        2.36267325147101      1.76430214597466     -1.62411387508703      H
+        2.47151759889187      1.66716238545536      1.71352887904645      H
+       -2.21780747886488      1.61895040795194      1.42909166965606      H
+       7.5962740085231E-05  -4.0857934540112E-05  -4.8744761475391E-05
+      -6.0983845417856E-05   7.9830766457179E-05  -3.4925661034367E-05
+      -1.4463699542727E-05   1.2449070639496E-05  -2.5758177939448E-05
+      -9.0543927133971E-07  -3.0757631178324E-05   2.9978764766058E-05
+       9.9487072236105E-06  -3.3117742741925E-06  -1.7761861926360E-06
+       1.8388736755787E-05  -5.6520712811802E-05   2.2432871280090E-05
+       1.8193409276013E-05   6.5970552417126E-06  -5.2966267867581E-05
+      -2.8770522205566E-05   3.7645234986818E-05   2.2991740734472E-05
+      -1.7370086903159E-05  -5.0740745207732E-06   8.8767677728882E-05
+    $end
+
+    Args:
+        gradient (list[list[float]]): Gradient.
+        xyz (list[list[float]]): XYZ coordinates.
+    """
+    # calculate  |dE/dxyz|
+    sumofsqaures = sum((sum(x**2 for x in grad) for grad in gradient))
+    norm_grad = sumofsqaures**0.5
+    with open(filename, "w", encoding="utf8") as f:
+        f.write("$grad\n")
+        f.write(
+            f"  cycle =      1    SCF energy =   {energy}   |dE/dxyz| =  {norm_grad}\n"
+        )
+        for i, coord in enumerate(xyz):
+            f.write(
+                f"{coord[0] / BOHR2AA:>20.11f} "
+                + f"{coord[1] / BOHR2AA:>20.11f} "
+                + f"{coord[2] / BOHR2AA:>20.11f} "
+                + f"{symbols[i]}\n"
+            )
+        for i, grad in enumerate(gradient):
+            f.write(f"{grad[0]:>20.8e} {grad[1]:>20.8e} {grad[2]:>20.8e}\n")
+        f.write("$end\n")
+
+
+def write_multiwfn_charges(
+    charges: list[float], ati: list[int], xyz: list[list[float]], file: Path
+) -> None:
+    """
+    Write the Hirshfeld charges to a multiwfn.chg file.
+    C     0.000000    0.000000    0.316085  -0.0083631036
+    N     0.000000    0.000000    1.476008  -0.1995613116
+    At    0.000000    0.000000   -1.792093   0.2079244152
+
+    Args:
+        charges (list[int]): List of Hirshfeld charges.
+    """
+    if len(charges) != len(ati):
+        raise ValueError("Length of charges and atomic numbers do not match.")
+    with open(file, "w", encoding="utf8") as f:
+        for i, charge in enumerate(charges):
+            f.write(
+                f"{PSE[ati[i] + 1]:>2} "
+                + f"{xyz[i][0] / BOHR2AA:>14.8f} "
+                + f"{xyz[i][1] / BOHR2AA:>14.8f} "
+                + f"{xyz[i][2] / BOHR2AA:>14.8f} "
+                + f"{charge:>14.8f}\n"
+            )
+
+
+def postprocess_molecule(mol: Molecule, calc_dir: Path, orca_file: str, verbosity: int):
+    """
+    Postprocess the molecule after the ORCA calculation.
+    """
+    # parse the Hirshfeld charges from the ORCA output file
+    with open(calc_dir / orca_file, "r", encoding="utf8") as f:
+        orca_output = f.read()
+    charges = parse_orca_hirshfeld(orca_output)
+    if verbosity > 1:
+        print(f"\tHirshfeld charges: {charges}")
+    ati = list(mol.ati)
+    xyz = list(mol.xyz)
+    write_multiwfn_charges(charges, ati, xyz, calc_dir.parent / "multiwfn.chg")
+    dipole = parse_orca_dipole(orca_output)
+    if verbosity > 1:
+        print(f"\tDipole moment: {dipole}")
+    write_tm_control_file(mol.energy, dipole, calc_dir.parent / "control")  # type: ignore
+    # parse gradient from ORCA output file
+    gradient = parse_orca_gradient(orca_output)
+    if verbosity > 1:
+        print(f"\tGradient: {gradient}")
+    # convert ati to a list of PSE symbols
+    symbols = [PSE[elem + 1] for elem in ati]
+    write_tm_gradient(gradient, xyz, symbols, mol.energy, calc_dir.parent / "gradient")  # type: ignore
 
 
 # Command-line interface
@@ -1368,6 +1607,14 @@ def main():
         default=1,
         required=False,
         help="Number of MPI processes to use.",
+    )
+    parser.add_argument(
+        "--maxcore",
+        "-mc",
+        type=int,
+        default=4000,
+        required=False,
+        help="Memory limit per core in MB. Options: <int>",
     )
 
     args = parser.parse_args()
