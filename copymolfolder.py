@@ -977,7 +977,13 @@ class ORCA:
     This class handles all interaction with the ORCA external dependency.
     """
 
-    def __init__(self, path: str | Path, ncores: int = 1, maxcore: int = 4000) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        ncores: int = 1,
+        maxcore: int = 4000,
+        scfcycles: int = 500,
+    ) -> None:
         """
         Initialize the ORCA class.
         """
@@ -989,6 +995,7 @@ class ORCA:
             raise TypeError("orca_path should be a string or a Path object.")
         self.ncores = ncores
         self.maxcore = maxcore
+        self.scfcycles = scfcycles
 
     def optimize(
         self, molecule: Molecule, tmp_path: str | Path, verbosity: int = 1
@@ -1175,7 +1182,7 @@ class ORCA:
             orca_input += "! OPT\n"
         if any(atom >= 86 for atom in molecule.ati):
             orca_input += "! AutoAux\n"
-        orca_input += f"%pal nprocs {self.ncores} end\n"
+        orca_input += f"%pal\n\tnprocs {self.ncores}\nend\n"
         orca_input += f"%maxcore {self.maxcore}\n"
         # "! AutoAux" keyword for super-heavy elements as def2/J ends at Rn
         if any(atom >= 86 for atom in molecule.ati):
@@ -1187,7 +1194,7 @@ class ORCA:
                 orca_input += f'\tNewGTO  {PSE[heavy_atom]} "def-TZVP" end\n'
                 orca_input += f'\tNewECP  {PSE[heavy_atom]} "def-ECP" end\n'
             orca_input += "end\n"
-        orca_input += "%scf\n\tMaxIter 500\nend\n"
+        orca_input += f"%scf\n\tMaxIter {self.scfcycles}\nend\n"
         orca_input += "%elprop\n\tOrigin 0.0,0.0,0.0\nend\n"
         orca_input += "%output\n"
         orca_input += "\tPrint[ P_Internal ]   0  # internal coordinates\n"
@@ -1201,11 +1208,6 @@ class ORCA:
         return orca_input
 
 
-# TODO: 1. Convert this to a @staticmethod of Class ORCA
-#       2. Rename to `get_method` or similar to enable an abstract interface
-#       3. Add the renamed method to the ABC `QMMethod`
-#       4. In `main.py`: Remove the passing of the path finder functions as arguments
-#          and remove the boiler plate code to make it more general.
 def get_orca_path(binary_name: str | Path | None = None) -> Path:
     """
     Get the path to the orca binary based on different possible names
@@ -1274,7 +1276,12 @@ def process_molecule_directory(
     """
     Process a directory of molecules.
     """
-    orca = ORCA(path=get_orca_path(), ncores=arguments.mpi, maxcore=arguments.maxcore)
+    orca = ORCA(
+        path=get_orca_path(),
+        ncores=arguments.mpi,
+        maxcore=arguments.maxcore,
+        scfcycles=arguments.scf_cycles,
+    )
     target_dir = arguments.output / arguments.target.capitalize()
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1541,6 +1548,10 @@ def postprocess_molecule(mol: Molecule, calc_dir: Path, orca_file: str, verbosit
     """
     Postprocess the molecule after the ORCA calculation.
     """
+    # create TZ directory in the target directory
+    tm_ref_dir = calc_dir.parent / "TZ"
+    tm_ref_dir.mkdir(parents=True, exist_ok=True)
+    mol.write_coord_to_file(tm_ref_dir / "coord")
     # parse the Hirshfeld charges from the ORCA output file
     with open(calc_dir / orca_file, "r", encoding="utf8") as f:
         orca_output = f.read()
@@ -1549,18 +1560,18 @@ def postprocess_molecule(mol: Molecule, calc_dir: Path, orca_file: str, verbosit
         print(f"\tHirshfeld charges: {charges}")
     ati = list(mol.ati)
     xyz = list(mol.xyz)
-    write_multiwfn_charges(charges, ati, xyz, calc_dir.parent / "multiwfn.chg")
+    write_multiwfn_charges(charges, ati, xyz, tm_ref_dir / "multiwfn.chg")
     dipole = parse_orca_dipole(orca_output)
     if verbosity > 1:
         print(f"\tDipole moment: {dipole}")
-    write_tm_control_file(mol.energy, dipole, calc_dir.parent / "control")  # type: ignore
+    write_tm_control_file(mol.energy, dipole, tm_ref_dir / "control")  # type: ignore
     # parse gradient from ORCA output file
     gradient = parse_orca_gradient(orca_output)
     if verbosity > 1:
         print(f"\tGradient: {gradient}")
     # convert ati to a list of PSE symbols
     symbols = [PSE[elem + 1] for elem in ati]
-    write_tm_gradient(gradient, xyz, symbols, mol.energy, calc_dir.parent / "gradient")  # type: ignore
+    write_tm_gradient(gradient, xyz, symbols, mol.energy, tm_ref_dir / "gradient")  # type: ignore
 
 
 # Command-line interface
@@ -1615,6 +1626,14 @@ def main():
         default=4000,
         required=False,
         help="Memory limit per core in MB. Options: <int>",
+    )
+    parser.add_argument(
+        "--scf-cycles",
+        "-sc",
+        type=int,
+        default=500,
+        required=False,
+        help="Number of SCF cycles.",
     )
 
     args = parser.parse_args()
