@@ -815,46 +815,52 @@ class ORCA:
             raise TypeError("orca_path should be a string or a Path object.")
         self.ncores = ncores
 
-    def optimize(self, molecule: Molecule, verbosity: int = 1) -> Molecule:
+    def optimize(
+        self, molecule: Molecule, tmp_path: str | Path, verbosity: int = 1
+    ) -> Molecule:
         """
         Optimize a molecule using ORCA.
         """
+        # write the molecule to a temporary file
+        molfile = "mol.xyz"
+        if isinstance(tmp_path, str):
+            tmp_path = Path(tmp_path).resolve()
+        elif isinstance(tmp_path, Path):
+            tmp_path = tmp_path.resolve()
+        else:
+            raise TypeError("tmp_path should be a string or a Path object.")
+        tmp_path.mkdir(exist_ok=True)
+        molecule.write_xyz_to_file(tmp_path / molfile)
 
-        # Create a unique temporary directory using TemporaryDirectory context manager
-        with TemporaryDirectory(prefix="orca_") as temp_dir:
-            temp_path = Path(temp_dir).resolve()
-            # write the molecule to a temporary file
-            molecule.write_xyz_to_file(temp_path / "molecule.xyz")
+        inputname = "orca_opt.inp"
+        orca_input = self._gen_input(molecule, molfile, True)
+        if verbosity > 1:
+            print("ORCA input file:\n##################")
+            print(orca_input)
+            print("##################")
+        with open(tmp_path / inputname, "w", encoding="utf8") as f:
+            f.write(orca_input)
 
-            inputname = "orca_opt.inp"
-            orca_input = self._gen_input(molecule, "molecule.xyz", True)
-            if verbosity > 1:
-                print("ORCA input file:\n##################")
-                print(orca_input)
-                print("##################")
-            with open(temp_path / inputname, "w", encoding="utf8") as f:
-                f.write(orca_input)
+        # run orca
+        arguments = [
+            inputname,
+        ]
 
-            # run orca
-            arguments = [
-                inputname,
-            ]
-
-            orca_log_out, orca_log_err, return_code = self._run(
-                temp_path=temp_path, arguments=arguments
+        orca_log_out, orca_log_err, return_code = self._run(
+            temp_path=tmp_path, arguments=arguments
+        )
+        if verbosity > 2:
+            print(orca_log_out)
+        if return_code != 0:
+            raise RuntimeError(
+                f"ORCA failed with return code {return_code}:\n{orca_log_err}"
             )
-            if verbosity > 2:
-                print(orca_log_out)
-            if return_code != 0:
-                raise RuntimeError(
-                    f"ORCA failed with return code {return_code}:\n{orca_log_err}"
-                )
 
-            # read the optimized molecule from the output file
-            xyzfile = Path(temp_path / inputname).resolve().with_suffix(".xyz")
-            optimized_molecule = molecule.copy()
-            optimized_molecule.read_xyz_from_file(xyzfile)
-            return optimized_molecule
+        # read the optimized molecule from the output file
+        xyzfile = Path(tmp_path / inputname).resolve().with_suffix(".xyz")
+        optimized_molecule = molecule.copy()
+        optimized_molecule.read_xyz_from_file(xyzfile)
+        return optimized_molecule
 
     def singlepoint(
         self, molecule: Molecule, tmp_path: str | Path, verbosity: int = 1
@@ -876,7 +882,7 @@ class ORCA:
         # write the input file
         inputname = "orca.inp"
         orca_input = self._gen_input(molecule, molfile)
-        if verbosity > 1:
+        if verbosity > 2:
             print("ORCA input file:\n##################")
             print(self._gen_input(molecule, molfile))
             print("##################")
@@ -1012,7 +1018,7 @@ class ORCA:
         orca_input += "\tPrint[ P_Basis ]      1  # basis set information\n"
         orca_input += "\tPrint[ P_Mayer ]      0  # Mayer population analysis\n"
         orca_input += "\tPrint[ P_Loewdin ]    0  # Loewdin population analysis\n"
-        orca_input += "end"
+        orca_input += "end\n"
 
         orca_input += f"* xyzfile {molecule.charge} {molecule.uhf + 1} {xyzfile}\n"
         return orca_input
@@ -1075,6 +1081,46 @@ def convert_actinide(inp_mol: Molecule, source: str, target: str) -> Molecule:
     return inp_mol
 
 
+def get_lanthanides() -> list[int]:
+    """
+    Get the atomic numbers of lanthanides.
+    """
+    lanthanides = list(range(56, 71))
+    return lanthanides
+
+
+def get_actinides() -> list[int]:
+    """
+    Get the atomic numbers of actinides.
+    """
+    actinides = list(range(88, 103))
+    return actinides
+
+
+def calculate_f_electrons(atlist: np.ndarray) -> int:
+    """
+    Calculate the number of unpaired electrons in a molecule.
+    """
+    f_electrons = 0
+    for ati, occurrence in enumerate(atlist):
+        if ati in get_lanthanides():
+            f_electrons += (ati - 55) * occurrence
+        elif ati in get_actinides():
+            f_electrons += (ati - 87) * occurrence
+    return f_electrons
+
+
+def check_if_neighbours(source_elem: str, target_elem: str) -> bool:
+    """
+    Check if the source and target elements are neighbours in the periodic table.
+    """
+    source_idx = PSE_NUMBERS[source_elem.lower()]
+    target_idx = PSE_NUMBERS[target_elem.lower()]
+    if abs(source_idx - target_idx) == 1:
+        return True
+    return False
+
+
 def process_molecule_directory(
     arguments: argparse.Namespace,
 ):
@@ -1087,13 +1133,18 @@ def process_molecule_directory(
 
     source_dir: Path = arguments.source.resolve()
     source_element = source_dir.name
+    # check if the source and target elements are neighbours in the periodic table
+    if not check_if_neighbours(source_element, arguments.target):
+        raise ValueError(
+            f"Source ({source_element}) and target ({arguments.target}) elements are not neighbours in the periodic table."
+        )
 
     for molecule_dir in source_dir.iterdir():
         # if molecule_dir not a directory
         if not molecule_dir.is_dir() or molecule_dir.name.startswith("."):
             continue
         if arguments.verbosity > 0:
-            print(f"Processing molecule: {molecule_dir.name}")
+            print(f"Processing molecule: {molecule_dir.name}\n")
         coord_file = molecule_dir / "coord"
         if not coord_file.exists():
             continue
@@ -1103,7 +1154,9 @@ def process_molecule_directory(
         molecule = convert_actinide(molecule, source_element, arguments.target)
         ### CAUTION: UHF has not been adjusted yet!
         if arguments.verbosity > 1:
+            print("#### Molecule before ORCA calculation ####")
             print(molecule)
+            print("##########################################\n")
 
         # create new directory in target directory for the molecule
         mol_dir = target_dir / molecule.name
@@ -1111,33 +1164,65 @@ def process_molecule_directory(
 
         # Perform ORCA calculations
         if molecule.uhf > 0:
+            if arguments.verbosity > 0:
+                print(
+                    "Molecule has unpaired electrons. "
+                    + "Performing closed-shell and open-shell calculations..."
+                )
             try:
                 tmp_molecule = molecule.copy()
                 tmp_molecule.uhf -= (
-                    1 * molecule.atlist[PSE_NUMBERS[source_element.lower()] - 1]
+                    1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
                 )  # number of electrons varies by the number of elements exchanged
-                calc_dir = mol_dir / "closed_shell"
-                try:
-                    closed_shell_out = orca.singlepoint(
-                        tmp_molecule, calc_dir, verbosity=arguments.verbosity
-                    )
-                    closed_shell_energy = parse_orca_energy(closed_shell_out)
-                except RuntimeError as e:
-                    print(f"Error in closed-shell calculation: {e}")
-                    closed_shell_energy = 0.0  # set to zero to avoid further errors
+                if tmp_molecule.uhf < 0:
+                    print("We cannot assign a negative number of unpaired electrons.")
+                    closed_shell_energy = 0.0
+                else:
+                    calc_dir = mol_dir / "closed_shell"
+                    try:
+                        closed_shell_out = orca.singlepoint(
+                            tmp_molecule, calc_dir, verbosity=arguments.verbosity
+                        )
+                        closed_shell_energy = parse_orca_energy(closed_shell_out)
+                        if arguments.verbosity > 1:
+                            print(
+                                f" \tClosed-shell calculation successful. Energy: {closed_shell_energy}"
+                            )
+                    except RuntimeError as e:
+                        print(f"Error in closed-shell calculation: {e}")
+                        closed_shell_energy = 0.0  # set to zero to avoid further errors
+                        if arguments.verbosity > 1:
+                            print(
+                                " \tClosed-shell calculation failed. Setting energy to zero."
+                            )
                 tmp_molecule = molecule.copy()
                 tmp_molecule.uhf += (
-                    1 * molecule.atlist[PSE_NUMBERS[source_element.lower()] - 1]
+                    1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
                 )  # number of electrons varies by the number of elements exchanged
-                calc_dir = mol_dir / "open_shell"
-                try:
-                    open_shell_out = orca.singlepoint(
-                        tmp_molecule, calc_dir, verbosity=arguments.verbosity
+                if tmp_molecule.uhf > calculate_f_electrons(tmp_molecule.atlist):
+                    print(
+                        f"\tNumber of unpaired electrons ({tmp_molecule.uhf}) in the molecule is larger than "
+                        + f"the calculated number of f and d electrons ({calculate_f_electrons(tmp_molecule.atlist)})."
                     )
-                    open_shell_energy = parse_orca_energy(open_shell_out)
-                except RuntimeError as e:
-                    print(f"Error in open-shell calculation: {e}")
                     open_shell_energy = 0.0
+                else:
+                    calc_dir = mol_dir / "open_shell"
+                    try:
+                        open_shell_out = orca.singlepoint(
+                            tmp_molecule, calc_dir, verbosity=arguments.verbosity
+                        )
+                        open_shell_energy = parse_orca_energy(open_shell_out)
+                        if arguments.verbosity > 1:
+                            print(
+                                f" \tOpen-shell calculation successful. Energy: {open_shell_energy}"
+                            )
+                    except RuntimeError as e:
+                        print(f"Error in open-shell calculation: {e}")
+                        open_shell_energy = 0.0
+                        if arguments.verbosity > 1:
+                            print(
+                                " \tOpen-shell calculation failed. Setting energy to zero."
+                            )
                 # if both energies are zero, skip the molecule
                 if closed_shell_energy == 0.0 and open_shell_energy == 0.0:
                     raise ValueError("Both closed-shell and open-shell energies failed")
@@ -1157,7 +1242,7 @@ def process_molecule_directory(
                         f"  Preferred UHF: {preferred_uhf}, Energy: {preferred_energy}"
                     )
             except ValueError as e:
-                print(f"Error in UHF calculation: {e}")
+                print(f"No energy evaluation succesful: {e}")
                 print(f"Skipping molecule {molecule.name}...")
                 continue
         else:
