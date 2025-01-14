@@ -6,8 +6,8 @@ from pathlib import Path
 import argparse
 import shutil as sh
 import subprocess as sp
-from tempfile import TemporaryDirectory
 import hashlib
+import csv
 
 import copy
 import numpy as np
@@ -160,6 +160,7 @@ class Molecule:
         self._atlist: np.ndarray = np.array([], dtype=int)
         self._xyz: np.ndarray = np.array([], dtype=float)
         self._ati: np.ndarray = np.array([], dtype=int)
+        self._energy: float | None = None
 
         self.rng = np.random.default_rng()
 
@@ -504,6 +505,28 @@ class Molecule:
             raise ValueError("Array must have one dimension.")
 
         self._atlist = value
+
+    @property
+    def energy(self) -> float | None:
+        """
+        Get the energy of the molecule.
+
+        :return: The energy of the molecule.
+        """
+        return self._energy
+
+    @energy.setter
+    def energy(self, value: float):
+        """
+        Set the energy of the molecule.
+
+        :param value: The energy to set.
+        :raise TypeError: If the value is not a float.
+        """
+        if not isinstance(value, float):
+            raise TypeError("Float expected.")
+
+        self._energy = value
 
     def get_xyz_str(self) -> str:
         """
@@ -1121,6 +1144,23 @@ def check_if_neighbours(source_elem: str, target_elem: str) -> bool:
     return False
 
 
+def calculate_spin_state(orca: ORCA, mol: Molecule, calc_dir: Path, verbosity: int):
+    """
+    Calculate the spin state of the molecule.
+    """
+    try:
+        orca_output = orca.singlepoint(mol, calc_dir, verbosity=verbosity)
+        total_energy = parse_orca_energy(orca_output)
+        if verbosity > 1:
+            print(f" \tORCA calculation successful. Energy: {total_energy}")
+    except RuntimeError as e:
+        print(f"Error in ORCA calculation: {e}")
+        total_energy = 0.0
+        if verbosity > 1:
+            print(" \tORCA alculation failed. Setting energy to zero.")
+    return total_energy
+
+
 def process_molecule_directory(
     arguments: argparse.Namespace,
 ):
@@ -1132,7 +1172,16 @@ def process_molecule_directory(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     source_dir: Path = arguments.source.resolve()
-    source_element = source_dir.name
+    if arguments.original_element:
+        source_element = arguments.original_element
+        if source_element.lower() not in PSE_NUMBERS:
+            raise ValueError(f"Element {source_element} not in the periodic table.")
+    else:
+        source_element = source_dir.name
+
+    # list of successful molecules
+    successful_molecules: list[Molecule] = []
+
     # check if the source and target elements are neighbours in the periodic table
     if not check_if_neighbours(source_element, arguments.target):
         raise ValueError(
@@ -1179,22 +1228,9 @@ def process_molecule_directory(
                     closed_shell_energy = 0.0
                 else:
                     calc_dir = mol_dir / "closed_shell"
-                    try:
-                        closed_shell_out = orca.singlepoint(
-                            tmp_molecule, calc_dir, verbosity=arguments.verbosity
-                        )
-                        closed_shell_energy = parse_orca_energy(closed_shell_out)
-                        if arguments.verbosity > 1:
-                            print(
-                                f" \tClosed-shell calculation successful. Energy: {closed_shell_energy}"
-                            )
-                    except RuntimeError as e:
-                        print(f"Error in closed-shell calculation: {e}")
-                        closed_shell_energy = 0.0  # set to zero to avoid further errors
-                        if arguments.verbosity > 1:
-                            print(
-                                " \tClosed-shell calculation failed. Setting energy to zero."
-                            )
+                    closed_shell_energy = calculate_spin_state(
+                        orca, tmp_molecule, calc_dir, verbosity=arguments.verbosity
+                    )
                 tmp_molecule = molecule.copy()
                 tmp_molecule.uhf += (
                     1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
@@ -1207,22 +1243,9 @@ def process_molecule_directory(
                     open_shell_energy = 0.0
                 else:
                     calc_dir = mol_dir / "open_shell"
-                    try:
-                        open_shell_out = orca.singlepoint(
-                            tmp_molecule, calc_dir, verbosity=arguments.verbosity
-                        )
-                        open_shell_energy = parse_orca_energy(open_shell_out)
-                        if arguments.verbosity > 1:
-                            print(
-                                f" \tOpen-shell calculation successful. Energy: {open_shell_energy}"
-                            )
-                    except RuntimeError as e:
-                        print(f"Error in open-shell calculation: {e}")
-                        open_shell_energy = 0.0
-                        if arguments.verbosity > 1:
-                            print(
-                                " \tOpen-shell calculation failed. Setting energy to zero."
-                            )
+                    open_shell_energy = calculate_spin_state(
+                        orca, tmp_molecule, calc_dir, verbosity=arguments.verbosity
+                    )
                 # if both energies are zero, skip the molecule
                 if closed_shell_energy == 0.0 and open_shell_energy == 0.0:
                     raise ValueError("Both closed-shell and open-shell energies failed")
@@ -1232,14 +1255,14 @@ def process_molecule_directory(
                     if closed_shell_energy < open_shell_energy
                     else molecule.uhf + 1
                 )
-                preferred_energy = min(closed_shell_energy, open_shell_energy)
+                molecule.energy = min(closed_shell_energy, open_shell_energy)
 
                 if arguments.verbosity > 0:
                     print(f"Molecule: {molecule.name}")
                     print(f"  Closed-shell energy: {closed_shell_energy}")
                     print(f"  Open-shell energy: {open_shell_energy}")
                     print(
-                        f"  Preferred UHF: {preferred_uhf}, Energy: {preferred_energy}"
+                        f"  Preferred UHF: {preferred_uhf}, Energy: {molecule.energy}"
                     )
             except ValueError as e:
                 print(f"No energy evaluation succesful: {e}")
@@ -1248,9 +1271,18 @@ def process_molecule_directory(
         else:
             if arguments.verbosity > 0:
                 print(
-                    "Molecule has no unpaired electrons. Taking the open-shell variant."
+                    "Molecule has no unpaired electrons. Performing only the open-shell calculation..."
                 )
-            preferred_uhf = 1
+            molecule.uhf += (
+                1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
+            )  # number of electrons varies by the number of elements exchanged
+            calc_dir = mol_dir / "open_shell"
+            molecule.energy = calculate_spin_state(
+                orca, molecule, calc_dir, verbosity=arguments.verbosity
+            )
+            if molecule.energy == 0.0:
+                print("No energy evaluation succesful. Skipping molecule...")
+                continue
         # write the molecule to the target directory
         molecule.uhf = preferred_uhf
         molecule.write_xyz_to_file(mol_dir / "struc.xyz")
@@ -1261,6 +1293,24 @@ def process_molecule_directory(
         else:
             gbw_file = mol_dir / "closed_shell" / "orca.gbw"
         sh.copy(gbw_file, mol_dir / "orca.gbw")
+        successful_molecules.append(molecule)
+
+    if arguments.verbosity > 0:
+        print("Successfully processed molecules:")
+        for mol in successful_molecules:
+            print(f"\t{mol.name}")
+        print(f"Processed {len(successful_molecules)} molecules.")
+    # write list of successful molecules to a CSV file
+    with open(
+        target_dir / "fitmolecules.csv", "w", newline="", encoding="utf8"
+    ) as csvfile:
+        csvwriter = csv.writer(csvfile)
+        csvwriter.writerow(["Molecule", "UHF", "Energy"])
+        for mol in successful_molecules:
+            csvwriter.writerow([mol.name, mol.uhf, mol.energy])
+    print(
+        f"List of successful molecules written to '{target_dir.resolve()}/fitmolecules.csv'"
+    )
 
 
 # Command-line interface
@@ -1277,11 +1327,20 @@ def main():
         "--target",
         "-t",
         required=True,
-        choices=["pa", "np"],
+        type=str,
+        default=None,
         help="Target element symbol.",
     )
     parser.add_argument(
         "--output", "-o", required=True, type=Path, help="Output directory path."
+    )
+    parser.add_argument(
+        "--original-element",
+        "-oe",
+        type=str,
+        default=None,
+        required=False,
+        help="Original element symbol.",
     )
     parser.add_argument(
         "--verbosity",
