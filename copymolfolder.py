@@ -871,7 +871,11 @@ class Molecule:
             for line in lines:
                 if line.startswith("$coord"):
                     continue
-                if line.startswith("$end") or line.startswith("$redundant"):
+                if (
+                    line.startswith("$end")
+                    or line.startswith("$redundant")
+                    or line.startswith("$user-defined")
+                ):
                     break
                 num_atoms += 1
             self.num_atoms = num_atoms
@@ -1282,7 +1286,7 @@ def process_molecule_directory(
         maxcore=arguments.maxcore,
         scfcycles=arguments.scf_cycles,
     )
-    target_dir = arguments.output / arguments.target.capitalize()
+    target_dir = arguments.output / arguments.target.upper()
     target_dir.mkdir(parents=True, exist_ok=True)
 
     source_dir: Path = arguments.source.resolve()
@@ -1315,6 +1319,7 @@ def process_molecule_directory(
 
         molecule = Molecule.read_mol_from_coord(coord_file)
         molecule.name = molecule_dir.name
+        stored_mol = molecule.copy()
         molecule = convert_actinide(molecule, source_element, arguments.target)
         ### CAUTION: UHF has not been adjusted yet!
         if arguments.verbosity > 1:
@@ -1323,11 +1328,10 @@ def process_molecule_directory(
             print("##########################################")
 
         # create new directory in target directory for the molecule
+        if not arguments.rename_directories:
+            molecule.name = stored_mol.name
         mol_dir = target_dir / molecule.name
         mol_dir.mkdir(parents=True, exist_ok=True)
-
-        # deep copy of original UHF value
-        original_uhf = copy.deepcopy(molecule.uhf)
 
         # Perform ORCA calculations
         try:
@@ -1411,7 +1415,7 @@ def process_molecule_directory(
         molecule.write_xyz_to_file(mol_dir / "struc.xyz")
         molecule.write_coord_to_file(mol_dir / "coord")
         # copy GBW file from preferred calculation to the target directory
-        if original_uhf > 0 and closed_shell_energy < open_shell_energy:  # type: ignore
+        if stored_mol.uhf > 0 and closed_shell_energy < open_shell_energy:  # type: ignore
             lowest_dir = closed_shell_dir
         else:
             lowest_dir = open_shell_dir
@@ -1635,6 +1639,14 @@ def main():
         default=250,
         required=False,
         help="Number of SCF cycles.",
+    )
+    parser.add_argument(
+        "--rename-directories",
+        "-r",
+        action="store_true",
+        default=False,
+        help="Rename directories to the sum formula.",
+        required=False,
     )
 
     args = parser.parse_args()
