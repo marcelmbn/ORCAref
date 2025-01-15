@@ -981,8 +981,8 @@ class ORCA:
         self,
         path: str | Path,
         ncores: int = 1,
-        maxcore: int = 4000,
-        scfcycles: int = 500,
+        maxcore: int = 5000,
+        scfcycles: int = 250,
     ) -> None:
         """
         Initialize the ORCA class.
@@ -1194,7 +1194,7 @@ class ORCA:
                 orca_input += f'\tNewGTO  {PSE[heavy_atom]} "def-TZVP" end\n'
                 orca_input += f'\tNewECP  {PSE[heavy_atom]} "def-ECP" end\n'
             orca_input += "end\n"
-        orca_input += f"%scf\n\tMaxIter {self.scfcycles}\nend\n"
+        orca_input += f"%scf\n\tMaxIter {self.scfcycles}\n\tdirectresetfreq 5\nend\n"
         orca_input += "%elprop\n\tOrigin 0.0,0.0,0.0\nend\n"
         orca_input += "%output\n"
         orca_input += "\tPrint[ P_Internal ]   0  # internal coordinates\n"
@@ -1307,7 +1307,8 @@ def process_molecule_directory(
         if not molecule_dir.is_dir() or molecule_dir.name.startswith("."):
             continue
         if arguments.verbosity > 0:
-            print(f"Processing molecule: {molecule_dir.name}\n")
+            print("\n" + 40 * "#")
+            print(f"Processing molecule: {molecule_dir.name}")
         coord_file = molecule_dir / "coord"
         if not coord_file.exists():
             continue
@@ -1319,7 +1320,7 @@ def process_molecule_directory(
         if arguments.verbosity > 1:
             print("#### Molecule before ORCA calculation ####")
             print(molecule)
-            print("##########################################\n")
+            print("##########################################")
 
         # create new directory in target directory for the molecule
         mol_dir = target_dir / molecule.name
@@ -1418,10 +1419,10 @@ def process_molecule_directory(
         successful_molecules.append(molecule)
 
     if arguments.verbosity > 0:
-        print("Successfully processed molecules:")
+        print("\n\nSuccessfully processed molecules:")
         for mol in successful_molecules:
             print(f"\t{mol.name}")
-        print(f"Processed {len(successful_molecules)} molecules.")
+        print(f"\nProcessed {len(successful_molecules)} molecules.")
     # write list of successful molecules to a CSV file
     with open(
         target_dir / "fitmolecules.csv", "w", newline="", encoding="utf8"
@@ -1623,7 +1624,7 @@ def main():
         "--maxcore",
         "-mc",
         type=int,
-        default=4000,
+        default=5000,
         required=False,
         help="Memory limit per core in MB. Options: <int>",
     )
@@ -1631,7 +1632,7 @@ def main():
         "--scf-cycles",
         "-sc",
         type=int,
-        default=500,
+        default=250,
         required=False,
         help="Number of SCF cycles.",
     )
