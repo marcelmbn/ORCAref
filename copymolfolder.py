@@ -1442,7 +1442,7 @@ def process_molecule_directory(
                     print(f"Molecule: {molecule.name}")
                     print(f"\tOpen-shell energy: {molecule.energy}")
         except ValueError as e:
-            print(f"No energy evaluation succesful: {e}")
+            print(f"No energy evaluation successful: {e}")
             print(f"Skipping molecule {molecule.name}...")
             continue
 
