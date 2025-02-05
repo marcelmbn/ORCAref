@@ -864,32 +864,36 @@ class Molecule:
 
         :param filename: The name of the file to read from.
         """
-        with open(filename, encoding="utf8") as f:
-            lines = f.readlines()
-            # number of atoms
-            num_atoms = 0
-            for line in lines:
-                if line.startswith("$coord"):
-                    continue
-                if (
-                    line.startswith("$end")
-                    or line.startswith("$redundant")
-                    or line.startswith("$user-defined")
-                ):
-                    break
-                num_atoms += 1
-            self.num_atoms = num_atoms
-            # read the atomic coordinates
-            self.xyz = np.zeros((self.num_atoms, 3))
-            self.ati = np.zeros(self.num_atoms, dtype=int)
-            self.atlist = np.zeros(103, dtype=int)
-            for i in range(self.num_atoms):
-                line_entries = lines[i + 1].split()
-                self.xyz[i, 0] = float(line_entries[0]) * BOHR2AA
-                self.xyz[i, 1] = float(line_entries[1]) * BOHR2AA
-                self.xyz[i, 2] = float(line_entries[2]) * BOHR2AA
-                self.ati[i] = PSE_NUMBERS[line_entries[3].lower()] - 1
-                self.atlist[self.ati[i]] += 1
+        try:
+            with open(filename, encoding="utf8") as f:
+                lines = f.readlines()
+                # number of atoms
+                num_atoms = 0
+                for line in lines:
+                    if line.startswith("$coord"):
+                        continue
+                    if (
+                        line.startswith("$end")
+                        or line.startswith("$redundant")
+                        or line.startswith("$user-defined")
+                    ):
+                        break
+                    num_atoms += 1
+                self.num_atoms = num_atoms
+                # read the atomic coordinates
+                self.xyz = np.zeros((self.num_atoms, 3))
+                self.ati = np.zeros(self.num_atoms, dtype=int)
+                self.atlist = np.zeros(103, dtype=int)
+                for i in range(self.num_atoms):
+                    line_entries = lines[i + 1].split()
+                    self.xyz[i, 0] = float(line_entries[0]) * BOHR2AA
+                    self.xyz[i, 1] = float(line_entries[1]) * BOHR2AA
+                    self.xyz[i, 2] = float(line_entries[2]) * BOHR2AA
+                    self.ati[i] = PSE_NUMBERS[line_entries[3].lower()] - 1
+                    self.atlist[self.ati[i]] += 1
+        # catch all exceptions that might occur
+        except Exception as e:
+            raise IOError("Error while reading the 'coord' file.") from e
 
     def read_charge_from_file(self, filename: str | Path):
         """
@@ -1253,7 +1257,9 @@ def convert_actinide(inp_mol: Molecule, source: str, target: str) -> Molecule:
     return inp_mol
 
 
-def calculate_spin_state(orca: ORCA, mol: Molecule, calc_dir: Path, verbosity: int):
+def calculate_spin_state(
+    orca: ORCA, mol: Molecule, calc_dir: Path, verbosity: int
+) -> float:
     """
     Calculate the spin state of the molecule.
     """
@@ -1317,7 +1323,25 @@ def process_molecule_directory(
         if not coord_file.exists():
             continue
 
-        molecule = Molecule.read_mol_from_coord(coord_file)
+        # avoid crash if the 'coord' file cannot be read
+        try:
+            molecule = Molecule.read_mol_from_coord(coord_file)
+        except IOError as e:
+            print(
+                f"Error reading molecule: {e}\nSkipping molecule {molecule_dir.name}..."
+            )
+            continue
+
+        # skip calculation if the molecule has no actinides
+        check_uhf: bool = True
+        if not any(atomtype >= 88 for atomtype in molecule.ati):
+            print("No actinides in molecule. Simple copying...")
+            check_uhf = False
+            # TODO: copy the molecule_dir to the target directory and continue
+            # would also be possible, currently, we will calculate everything from scratch...
+            # sh.copytree(molecule_dir, target_dir / molecule_dir.name)
+            # continue
+
         molecule.name = molecule_dir.name
         stored_mol = molecule.copy()
         molecule = convert_actinide(molecule, source_element, arguments.target)
@@ -1335,12 +1359,11 @@ def process_molecule_directory(
 
         # Perform ORCA calculations
         try:
-            if molecule.uhf > 0:
+            if (check_uhf and (molecule.uhf > 0)) or (
+                (not check_uhf) and molecule.uhf == 0
+            ):
                 if arguments.verbosity > 0:
-                    print(
-                        "Molecule has unpaired electrons. "
-                        + "Performing closed-shell and open-shell calculations..."
-                    )
+                    print("Performing closed-shell calculation...")
                 tmp_molecule = molecule.copy()
                 closed_shell_uhf = tmp_molecule.uhf - (
                     1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
@@ -1358,34 +1381,46 @@ def process_molecule_directory(
                         verbosity=arguments.verbosity,
                     )
             else:
-                closed_shell_energy = None
                 if arguments.verbosity > 0:
-                    print(
-                        "Molecule has no unpaired electrons. Performing only the open-shell calculation..."
-                    )
+                    if check_uhf and (molecule.uhf == 0):
+                        print(
+                            "Molecule has no unpaired electrons. Performing only the open-shell calculation..."
+                        )
+                    if (not check_uhf) and molecule.uhf > 0:
+                        print(
+                            "Open-shell molecule without actinides selected.\nSetting closed-shell energy to 0.0."
+                        )
+                closed_shell_energy = 0.0
             tmp_molecule = molecule.copy()
             open_shell_uhf = tmp_molecule.uhf + (
                 1 * molecule.atlist[PSE_NUMBERS[arguments.target.lower()] - 1]
             )  # number of electrons varies by the number of elements exchanged
             tmp_molecule.uhf = open_shell_uhf
-            if tmp_molecule.uhf > calculate_f_electrons(tmp_molecule.atlist):
+            if (not check_uhf) and molecule.uhf == 0:
+                print(
+                    "Closed-shell molecule without actinides selected.\n\tSetting open-shell energy to 0.0"
+                )
+                open_shell_energy = 0.0
+            elif check_uhf and (
+                tmp_molecule.uhf > calculate_f_electrons(tmp_molecule.atlist)
+            ):
                 print(
                     f"\tNumber of unpaired electrons ({tmp_molecule.uhf}) in the molecule is larger than "
                     + f"the calculated number of f and d electrons ({calculate_f_electrons(tmp_molecule.atlist)})."
                 )
                 open_shell_energy = 0.0
             else:
+                print("Performing open-shell calculation...")
                 open_shell_dir = mol_dir / "open_shell"
                 open_shell_energy = calculate_spin_state(
                     orca, tmp_molecule, open_shell_dir, verbosity=arguments.verbosity
                 )
 
+            # if both energies are zero, skip the molecule
+            if closed_shell_energy == 0.0 and open_shell_energy == 0.0:
+                raise ValueError("Both closed-shell and open-shell energies failed")
             # In this step, final energy and UHF are assigned
-            if molecule.uhf > 0:
-                # if both energies are zero, skip the molecule
-                if closed_shell_energy == 0.0 and open_shell_energy == 0.0:
-                    raise ValueError("Both closed-shell and open-shell energies failed")
-
+            if (check_uhf and molecule.uhf > 0) or (not check_uhf):
                 molecule.uhf = (
                     closed_shell_uhf
                     if closed_shell_energy < open_shell_energy  # type: ignore
@@ -1415,7 +1450,11 @@ def process_molecule_directory(
         molecule.write_xyz_to_file(mol_dir / "struc.xyz")
         molecule.write_coord_to_file(mol_dir / "coord")
         # copy GBW file from preferred calculation to the target directory
-        if stored_mol.uhf > 0 and closed_shell_energy < open_shell_energy:  # type: ignore
+        if (not check_uhf) and molecule.uhf == 0:
+            lowest_dir = closed_shell_dir
+        elif (not check_uhf) and molecule.uhf > 0:
+            lowest_dir = open_shell_dir
+        elif stored_mol.uhf > 0 and closed_shell_energy < open_shell_energy:  # type: ignore
             lowest_dir = closed_shell_dir
         else:
             lowest_dir = open_shell_dir
@@ -1557,6 +1596,8 @@ def postprocess_molecule(mol: Molecule, calc_dir: Path, orca_file: str, verbosit
     tm_ref_dir = calc_dir.parent / "TZ"
     tm_ref_dir.mkdir(parents=True, exist_ok=True)
     mol.write_coord_to_file(tm_ref_dir / "coord")
+    # touch 'basis' file (create empty file)
+    (tm_ref_dir / "basis").touch()
     # parse the Hirshfeld charges from the ORCA output file
     with open(calc_dir / orca_file, "r", encoding="utf8") as f:
         orca_output = f.read()
