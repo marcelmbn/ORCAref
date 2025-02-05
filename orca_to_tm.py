@@ -376,7 +376,7 @@ def parse_mulliken_reduced_orbital_charges(
                         atom_number, atom_symbol = atom_num_sym_angmom
                     elif len(atom_num_sym_angmom) == 3:
                         atom_number, atom_symbol, _ = atom_num_sym_angmom
-                    atom_number = int(atom_number)
+                    atom_number = int(atom_number)  # type: ignore
                     if atom_number >= nat - 1:
                         last_atom = True
                     # append the atom and charge to the list
@@ -432,7 +432,7 @@ def parse_mulliken_reduced_orbital_charges(
                             atom_number, atom_symbol = atom_num_sym_angmom
                         elif len(atom_num_sym_angmom) == 3:
                             atom_number, atom_symbol, _ = atom_num_sym_angmom
-                        atom_number = int(atom_number)
+                        atom_number = int(atom_number)  # type: ignore
                         if atom_number >= nat - 1:
                             last_atom = True
                         # append the atom and charge to the list
@@ -839,9 +839,10 @@ def main():
 
     # open both files and print the content
     if args.verbose:
-        with open(orca_output_file, "r") as orca_out, open(
-            orca_error_file, "r"
-        ) as orca_err:
+        with (
+            open(orca_output_file, "r") as orca_out,
+            open(orca_error_file, "r") as orca_err,
+        ):
             # if not ORCA TERMINATED NORMALLY in orca_content raise an error
             if "ORCA TERMINATED NORMALLY" not in orca_out:
                 raise ValueError("ORCA did not terminate normally.")
