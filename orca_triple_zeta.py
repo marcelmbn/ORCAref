@@ -212,7 +212,7 @@ def write_orca_input(
     orca_input = Path("tz.inp").resolve()
     with open(orca_input, "w", encoding="utf8") as f:
         f.write("! wB97M-V def2-TZVPPD\n")
-        f.write("! NoTRAH NoSOSCF\n")
+        f.write("! NoTRAH\n")
         f.write("! StrongSCF DefGrid3\n")
         f.write("! EnGrad\n")
         f.write("! PrintBasis\n")
