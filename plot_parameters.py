@@ -13,6 +13,8 @@ import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
 
+import numpy as np
+
 
 class PeriodicTable:
     """
@@ -253,39 +255,43 @@ class ParameterPlotter:
         group = self.periodic_table.get_group(element)
         symbol = self.periodic_table.get_symbol(element)
 
-        # Gather values for all elements in the same period.
+        # Define period_elements and group_elements.
         period_elements = sorted(
             self.periodic_table.get_elements_in_period(period), key=lambda x: x[0]
         )
-        period_x: list[str] = []
-        period_y: list[float] = []
-        for Z, _ in period_elements:
-            try:
-                y_val = self.param_data.get_parameter_cell(Z, row, col)
-            except ValueError:
-                continue
-            period_x.append(f"{self.periodic_table.get_symbol(Z)}({Z})")
-            period_y.append(y_val)
-
-        # Gather values for all elements in the same group.
-        # Gather values for all elements in the same group.
         group_elements = sorted(
             self.periodic_table.get_elements_in_group(group), key=lambda x: x[0]
         )
-        group_x: list[str] = []
-        group_y: list[float] = []
-        for Z, _ in group_elements:
+
+        # Gather data for the period line.
+        period_data = {}
+        for Z, _ in period_elements:
             try:
-                y_val = self.param_data.get_parameter_cell(Z, row, col)
+                period_data[Z] = self.param_data.get_parameter_cell(Z, row, col)
             except ValueError:
                 continue
-            group_x.append(f"{self.periodic_table.get_symbol(Z)}({Z})")
-            group_y.append(y_val)
+
+        # Gather data for the group line.
+        group_data = {}
+        for Z, _ in group_elements:
+            try:
+                group_data[Z] = self.param_data.get_parameter_cell(Z, row, col)
+            except ValueError:
+                continue
+
+        # Compute the union (sorted) of atomic numbers from both sets.
+        all_keys = sorted(set(period_data.keys()) | set(group_data.keys()))
+        # Use uniform spacing (0, 1, 2, ...) for the x positions.
+        x_positions = np.arange(len(all_keys))
+        all_labels = [f"{self.periodic_table.get_symbol(Z)}({Z})" for Z in all_keys]
+        period_y_full = [period_data.get(Z, np.nan) for Z in all_keys]
+        group_y_full = [group_data.get(Z, np.nan) for Z in all_keys]
 
         # Plotting.
         plt.figure(figsize=(10, 6))
-        plt.plot(period_x, period_y, marker="o", label=f"Period {period}")
-        plt.plot(group_x, group_y, marker="s", label=f"Group {group}")
+        plt.plot(x_positions, period_y_full, marker="o", label=f"Period {period}")
+        plt.plot(x_positions, group_y_full, marker="s", label=f"Group {group}")
+        plt.xticks(x_positions, all_labels, rotation=45)
         plt.xlabel("Element (Symbol (Atomic Number))")
         plt.ylabel(f"Value from row {row}, column {col}")
         plt.title(
