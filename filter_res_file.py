@@ -29,22 +29,28 @@ def extract_species_from_path(path: str) -> list[str]:
 def filter_res_file(res_lines: Sequence[str], valid_species: set[str]) -> list[str]:
     result = []
     for line in res_lines:
-        if not line.strip() or line.strip().startswith("#"):
+        print(line)
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
             result.append(line)
             continue
 
-        tokens = line.strip().split()
-        if not tokens:
+        tokens = stripped.split()
+        if len(tokens) < 2:
+            result.append(line)
             continue
 
         path = tokens[1]
-        species = extract_species_from_path(path)
+        # Only filter if the path contains a {...} pattern
+        if "{" not in path or "}" not in path:
+            result.append(line)
+            continue
 
+        species = extract_species_from_path(path)
         if all(s in valid_species for s in species):
             result.append(line)
 
     return result
-
 
 def main():
     parser = argparse.ArgumentParser(
