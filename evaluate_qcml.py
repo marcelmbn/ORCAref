@@ -41,9 +41,22 @@ def parse_energy_file(file_path: Path) -> float:
     """
 
     with open(file_path, encoding="utf8") as file:
-        lines = file.readlines()
-        # second value in second last line
-        energy = float(lines[-2].split()[1])
+        inside_energy_block = False
+        scf_lines = []
+        for line in file:
+            line = line.strip()
+            if line.startswith("$energy"):
+                inside_energy_block = True
+                continue
+            if line.startswith("$end"):
+                break
+            if inside_energy_block and line and line[0].isdigit():
+                scf_lines.append(line)
+        if not scf_lines:
+            raise ValueError("No SCF energy entries found between $energy and $end.")
+        # Get the last SCF line and extract the total energy
+        last_scf = scf_lines[-1].split()
+        energy = float(last_scf[1])
     return energy
 
 
