@@ -42,14 +42,9 @@ def parse_energy_file(file_path: Path) -> float:
 
     with open(file_path, encoding="utf8") as file:
         lines = file.readlines()
-        # second value in second line
-        for i, line in enumerate(lines):
-            if line.startswith("$energy"):
-                # Split the line and get the second value
-                energy_line = lines[i + 1]
-                energy_value = energy_line.split()[1]
-                return float(energy_value)
-    raise ValueError(f"Energy not found in {file_path}")
+        # second value in second last line
+        energy = float(lines[-2].split()[1])
+    return energy
 
 
 def statistics(energies: pd.DataFrame) -> None:
