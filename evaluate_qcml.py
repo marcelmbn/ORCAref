@@ -197,9 +197,9 @@ def main() -> int:
         if args.gradient:
             gxtb_gradient = parse_gradient_file(gxtb_gradient_file)
             wb97m_gradient = parse_gradient_file(wb97m_gradient_file)
-            print("gxtb gradient", gxtb_gradient)
-            print("wb97m gradient", wb97m_gradient)
-        exit()
+            # evaluate norm of gradient vector
+            gxtb_gradient_norm = np.linalg.norm(gxtb_gradient)
+            wb97m_gradient_norm = np.linalg.norm(wb97m_gradient)
 
         # add the energies to the dataframe
         energies = pd.concat(
@@ -215,6 +215,20 @@ def main() -> int:
             ],
             ignore_index=True,
         )
+        if args.gradient:
+            gradients = pd.concat(
+                [
+                    gradients,
+                    pd.DataFrame(
+                        {
+                            "Molecule": [mol_name],
+                            "GXTBGradientNorm": [gxtb_gradient_norm],
+                            "WB97MGradientNorm": [wb97m_gradient_norm],
+                        }
+                    ),
+                ],
+                ignore_index=True,
+            )
     # print the statistics
     if args.verbosity > 0:
         print(energies)
@@ -222,6 +236,11 @@ def main() -> int:
 
     # save the dataframe to a csv file
     energies.to_csv("energies.csv", index=False)
+    if args.gradient:
+        gradients.to_csv("gradients.csv", index=False)
+        if args.verbosity > 0:
+            print(gradients)
+            statistics(gradients)
 
     return 0
 
