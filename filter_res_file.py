@@ -63,10 +63,11 @@ def filter_res_file(res_lines: Sequence[str], valid_species: set[str]) -> list[s
             relevant_paths = token.split("/")
             token_to_search: str = ""
             for relevant_path in relevant_paths:
-                if relevant_path.strip().startswith("$") or not relevant_path.strip():
+                relevant_path = relevant_path.strip()
+                if relevant_path.startswith("$") or not relevant_path:
                     # Skip empty tokens or those starting with $
                     continue
-                token_to_search = relevant_path.strip()
+                token_to_search = relevant_path
             if not token_to_search:
                 continue
             if "{" in token_to_search and "}" in token_to_search:
