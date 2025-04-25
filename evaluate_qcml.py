@@ -140,7 +140,7 @@ def parse_gradient_file(file_path: Path) -> np.ndarray:
         # extract a numpy array from the last half of the table
         gradient = np.array(
             [
-                list(map(float, lines[i].split()))
+                list(map(lambda x: float(x.replace("D", "E")), lines[i].split()))
                 for i in number_lines[len(number_lines) // 2 :]
             ]
         )
@@ -184,10 +184,10 @@ def main() -> int:
         if not wb97m_energy_file.exists():
             print(f"File {wb97m_energy_file} does not exist.")
             continue
-        if args.gradient and not gxtb_gradient_file.exists(): # pylint: disable=E0606
+        if args.gradient and not gxtb_gradient_file.exists():  # pylint: disable=E0606
             print(f"File {gxtb_gradient_file} does not exist.")
             continue
-        if args.gradient and not wb97m_gradient_file.exists(): # pylint: disable=E0606
+        if args.gradient and not wb97m_gradient_file.exists():  # pylint: disable=E0606
             print(f"File {wb97m_gradient_file} does not exist.")
             continue
 
