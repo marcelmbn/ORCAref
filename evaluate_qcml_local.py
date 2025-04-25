@@ -34,12 +34,6 @@ def get_args() -> argparse.Namespace:
         default="gfn2-xtb, r2scan-3c_GRAD",
         help="Comma separated list of methods to use.",
     )
-    parser.add_argument(
-        "--gradient",
-        action="store_true",
-        help="If set, the script will also parse the gradient files.",
-        default=False,
-    )
     return parser.parse_args()
 
 
@@ -181,8 +175,9 @@ def main() -> int:
             if method == "r2scan-3c_GRAD":
                 gradient_file = Path(f"{mol_name}/{method}/orca.out").resolve()
 
-            if args.gradient and not gradient_file.exists():  # pylint: disable=E0606
+            if not gradient_file.exists():  # pylint: disable=E0606
                 print(f"File {gradient_file} does not exist.")
+                gradient_norms[method] = np.nan
                 continue
 
             # parse gradient
@@ -192,7 +187,7 @@ def main() -> int:
                 gradient = parse_orca_gradient(gradient_file)
             # evaluate norm of gradient vector
             gradient_norm = np.linalg.norm(gradient)  # pylint: disable=E0606
-            gradient_norms[method] = gradient_norm 
+            gradient_norms[method] = gradient_norm
 
         # create a dataframe from the gradient norms
         gradients = pd.concat(
