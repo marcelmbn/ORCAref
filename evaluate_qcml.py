@@ -180,26 +180,27 @@ def main() -> int:
         # check if the files exist
         if not gxtb_energy_file.exists():
             print(f"File {gxtb_energy_file} does not exist.")
-            continue
+            gxtb_energy = np.nan
+        else:
+            gxtb_energy = parse_energy_file(gxtb_energy_file)
         if not wb97m_energy_file.exists():
             print(f"File {wb97m_energy_file} does not exist.")
-            continue
-        if args.gradient and not gxtb_gradient_file.exists():  # pylint: disable=E0606
-            print(f"File {gxtb_gradient_file} does not exist.")
-            continue
-        if args.gradient and not wb97m_gradient_file.exists():  # pylint: disable=E0606
-            print(f"File {wb97m_gradient_file} does not exist.")
-            continue
-
-        # parse the energy files
-        gxtb_energy = parse_energy_file(gxtb_energy_file)
-        wb97m_energy = parse_energy_file(wb97m_energy_file)
+            wb97m_energy = np.nan
+        else:
+            wb97m_energy = parse_energy_file(wb97m_energy_file)
         if args.gradient:
-            gxtb_gradient = parse_gradient_file(gxtb_gradient_file)
-            wb97m_gradient = parse_gradient_file(wb97m_gradient_file)
-            # evaluate norm of gradient vector
-            gxtb_gradient_norm = np.linalg.norm(gxtb_gradient)
-            wb97m_gradient_norm = np.linalg.norm(wb97m_gradient)
+            if not gxtb_gradient_file.exists():  # pylint: disable=E0606
+                print(f"File {gxtb_gradient_file} does not exist.")
+                gxtb_gradient_norm = np.nan
+            else:
+                gxtb_gradient = parse_gradient_file(gxtb_gradient_file)
+                gxtb_gradient_norm = float(np.linalg.norm(gxtb_gradient))
+            if not wb97m_gradient_file.exists():  # pylint: disable=E0606
+                print(f"File {wb97m_gradient_file} does not exist.")
+                wb97m_gradient_norm = np.nan
+            else:
+                wb97m_gradient = parse_gradient_file(wb97m_gradient_file)
+                wb97m_gradient_norm = float(np.linalg.norm(wb97m_gradient))
 
         # add the energies to the dataframe
         energies = pd.concat(
