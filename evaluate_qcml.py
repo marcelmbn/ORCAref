@@ -67,6 +67,42 @@ def parse_energy_file(file_path: Path) -> float:
     return energy
 
 
+def parse_orca_gradient(file: Path) -> np.ndarray:
+    """
+    Parse the gradient from the ORCA output file:
+    ------------------
+    CARTESIAN GRADIENT
+    ------------------
+
+       1   O   :    0.006350291   -0.008440957   -0.003357480
+       2   C   :   -0.008161812    0.003870253   -0.001779037
+       3   C   :    0.006660876    0.003069053    0.001391212
+       4   H   :   -0.000383006   -0.000387866    0.003712008
+       5   H   :   -0.000792639    0.000124760   -0.002592300
+       6   H   :   -0.002657347    0.000481362   -0.000513059
+       7   H   :   -0.000557464   -0.000925923    0.000833975
+       8   H   :   -0.001010191   -0.000685303   -0.001139491
+       9   H   :    0.000551291    0.002894622    0.003444172
+
+    Args:
+        file (Path): Path to the ORCA output file.
+    """
+
+    gradient: list[list[float]] = []
+    with open(file, "r", encoding="utf8") as f:
+        # read all lines
+        lines = f.readlines()
+        for i, line in enumerate(lines):
+            if "CARTESIAN GRADIENT" in line:
+                # start reading the gradient
+                for j in range(i + 3, len(lines)):
+                    if lines[j].strip() == "":
+                        break
+                    gradient.append([float(x) for x in lines[j].split()[3:]])
+
+    return np.array(gradient)
+
+
 def parse_gradient_file(file_path: Path) -> np.ndarray:
     """
     Parse a gradient file and return the gradient vector.
@@ -171,11 +207,18 @@ def main() -> int:
         mol_name = mol_name.strip()
         # get the path to the energy file
         prefix = "/tmp1/grimme/BENCH/qcml_100k"
+        local_prefix = "qcml_100k"
         gxtb_energy_file = Path(f"{prefix}/{mol_name}/energy").resolve()
         wb97m_energy_file = Path(f"{prefix}/{mol_name}/TZ/energy").resolve()
         if args.gradient:
             gxtb_gradient_file = Path(f"{prefix}/{mol_name}/gradient").resolve()
             wb97m_gradient_file = Path(f"{prefix}/{mol_name}/TZ/gradient").resolve()
+            r2scan3c_gradient_file = Path(
+                f"{local_prefix}/{mol_name}/r2scan-3c_GRAD/orca.out"
+            ).resolve()
+            gfn2xtb_gradient_file = Path(
+                f"{local_prefix}/{mol_name}/gfn2-xtb/gradient"
+            ).resolve()
 
         # check if the files exist
         if not gxtb_energy_file.exists():
@@ -189,18 +232,34 @@ def main() -> int:
         else:
             wb97m_energy = parse_energy_file(wb97m_energy_file)
         if args.gradient:
-            if not gxtb_gradient_file.exists():  # pylint: disable=E0606
-                print(f"File {gxtb_gradient_file} does not exist.")
-                gxtb_gradient_norm = np.nan
-            else:
-                gxtb_gradient = parse_gradient_file(gxtb_gradient_file)
-                gxtb_gradient_norm = float(np.linalg.norm(gxtb_gradient))
+            ### Reference gradient
             if not wb97m_gradient_file.exists():  # pylint: disable=E0606
                 print(f"File {wb97m_gradient_file} does not exist.")
-                wb97m_gradient_norm = np.nan
+                continue
+            wb97m_gradient = parse_gradient_file(wb97m_gradient_file)
+
+            ### Gradients to compare
+            if not gxtb_gradient_file.exists():  # pylint: disable=E0606
+                print(f"File {gxtb_gradient_file} does not exist.")
+                gxtb_error_gradient_norm = np.nan
             else:
-                wb97m_gradient = parse_gradient_file(wb97m_gradient_file)
-                wb97m_gradient_norm = float(np.linalg.norm(wb97m_gradient))
+                gxtb_gradient = parse_gradient_file(gxtb_gradient_file)
+                gxtb_error_gradient = gxtb_gradient - wb97m_gradient
+                gxtb_error_gradient_norm = float(np.linalg.norm(gxtb_error_gradient))
+            if not r2scan3c_gradient_file.exists():  # pylint: disable=E0606
+                print(f"File {r2scan3c_gradient_file} does not exist.")
+                r2scan3c_error_gradient_norm = np.nan
+            else:
+                r2scan3c_gradient = parse_orca_gradient(r2scan3c_gradient_file)
+                r2scan3c_error_gradient = r2scan3c_gradient - wb97m_gradient
+                r2scan3c_error_gradient_norm = float(np.linalg.norm(r2scan3c_error_gradient))
+            if not gfn2xtb_gradient_file.exists():  # pylint: disable=E0606
+                print(f"File {gfn2xtb_gradient_file} does not exist.")
+                gfn2xtb_error_gradient_norm = np.nan
+            else:
+                gfn2xtb_gradient = parse_gradient_file(gfn2xtb_gradient_file)
+                gfn2xtb_error_gradient = gfn2xtb_gradient - wb97m_gradient
+                gfn2xtb_error_gradient_norm = float(np.linalg.norm(gfn2xtb_error_gradient))
 
         # add the energies to the dataframe
         energies = pd.concat(
@@ -223,8 +282,9 @@ def main() -> int:
                     pd.DataFrame(
                         {
                             "Molecule": [mol_name],
-                            "GXTBGradientNorm": [gxtb_gradient_norm],
-                            "WB97MGradientNorm": [wb97m_gradient_norm],
+                            "GXTBErrorGradientNorm": [gxtb_error_gradient_norm],
+                            "R2SCAN3CErrorGradientNorm": [r2scan3c_error_gradient_norm],
+                            "GFN2XTBErrorGradientNorm": [gfn2xtb_error_gradient_norm],
                         }
                     ),
                 ],
