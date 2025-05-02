@@ -57,7 +57,7 @@ def parse_energy_file(file_path: Path) -> float:
                 continue
             if line.startswith("$end"):
                 break
-            if inside_energy_block and line and line[0].isdigit():
+            if inside_energy_block and line:
                 scf_lines.append(line)
         if not scf_lines:
             raise ValueError("No SCF energy entries found between $energy and $end.")
