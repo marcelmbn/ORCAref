@@ -67,6 +67,55 @@ def parse_energy_file(file_path: Path) -> float:
     return energy
 
 
+def parse_control_file(file_path: Path) -> float:
+    """
+    Parse the total energy from the control file.
+
+    $symmetry c1
+    $atoms
+        basis =def2-TZVPPD
+        jbas  =def2-TZVPPD
+    $coord file=coord
+    $energy file=energy
+    $grad file=gradient
+    $scfiterlimit 750
+    $dft
+     functional wb97m-v
+     gridsize m5
+     weight derivatives
+    $last SCF energy change = -937.75574
+    $subenergy  Etot         E1                  Ej                Ex                 Ec                 En
+    -937.7557435044    -2208.060484503     866.4835181046     0.000000000000     0.000000000000     463.2091726267
+    $charge from ridft
+              0.000 (not to be modified here)
+    $dipole from ridft
+      x    -0.00806871217406    y    -0.51046630100360    z    -0.09136721434042    a.u.
+       | dipole | =    1.3182649466  debye
+    $end
+    """
+    # parse total energy from the subenergy block (first entry ("Etot") in the table)
+    with open(file_path, encoding="utf8") as file:
+        inside_subenergy_block = False
+        subenergy_lines: list[str] = []
+        for line in file:
+            line = line.strip()
+            if line.startswith("$subenergy"):
+                inside_subenergy_block = True
+                continue
+            if line.startswith("$end") or (
+                inside_subenergy_block and line.startswith("$")
+            ):
+                break
+            if inside_subenergy_block and line and line[0].isdigit():
+                subenergy_lines.append(line)
+        if not subenergy_lines:
+            raise ValueError("No SCF energy entries found between $subenergy and $end.")
+        # Get the last SCF line and extract the total energy
+        last_scf = subenergy_lines[-1].split()
+        energy = float(last_scf[0])
+    return energy
+
+
 def parse_orca_gradient(file: Path) -> np.ndarray:
     """
     Parse the gradient from the ORCA output file:
@@ -227,8 +276,13 @@ def main() -> int:
         else:
             gxtb_energy = parse_energy_file(gxtb_energy_file)
         if not wb97m_energy_file.exists():
-            print(f"File {wb97m_energy_file} does not exist.")
-            wb97m_energy = np.nan
+            # print(f"File {wb97m_energy_file} does not exist.")
+            wb97m_energy_file = wb97m_energy_file.parent / "control"
+            if not wb97m_energy_file.exists():
+                print(f"File {wb97m_energy_file} does also not exist.")
+                wb97m_energy = np.nan
+            else:
+                wb97m_energy = parse_control_file(wb97m_energy_file)
         else:
             wb97m_energy = parse_energy_file(wb97m_energy_file)
         if args.gradient:
@@ -252,14 +306,18 @@ def main() -> int:
             else:
                 r2scan3c_gradient = parse_orca_gradient(r2scan3c_gradient_file)
                 r2scan3c_error_gradient = r2scan3c_gradient - wb97m_gradient
-                r2scan3c_error_gradient_norm = float(np.linalg.norm(r2scan3c_error_gradient))
+                r2scan3c_error_gradient_norm = float(
+                    np.linalg.norm(r2scan3c_error_gradient)
+                )
             if not gfn2xtb_gradient_file.exists():  # pylint: disable=E0606
                 print(f"File {gfn2xtb_gradient_file} does not exist.")
                 gfn2xtb_error_gradient_norm = np.nan
             else:
                 gfn2xtb_gradient = parse_gradient_file(gfn2xtb_gradient_file)
                 gfn2xtb_error_gradient = gfn2xtb_gradient - wb97m_gradient
-                gfn2xtb_error_gradient_norm = float(np.linalg.norm(gfn2xtb_error_gradient))
+                gfn2xtb_error_gradient_norm = float(
+                    np.linalg.norm(gfn2xtb_error_gradient)
+                )
 
         # add the energies to the dataframe
         energies = pd.concat(
