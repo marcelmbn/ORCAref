@@ -277,6 +277,9 @@ def main() -> int:
             gfn2xtb_gradient_file = Path(
                 f"{local_prefix}/{mol_name}/gfn2-xtb/gradient"
             ).resolve()
+            pbe_gradient_file = Path(
+                f"{local_prefix}/{mol_name}/pbe-def2-SVP_GRAD/orca.out"
+            ).resolve()
 
         # check if the files exist
         if not gxtb_energy_file.exists():
@@ -327,6 +330,13 @@ def main() -> int:
                 gfn2xtb_error_gradient_norm = float(
                     np.linalg.norm(gfn2xtb_error_gradient)
                 )
+            if not pbe_gradient_file.exists():  # pylint: disable=E0606
+                print(f"File {pbe_gradient_file} does not exist.")
+                pbe_error_gradient_norm = np.nan
+            else:
+                pbe_gradient = parse_orca_gradient(pbe_gradient_file)
+                pbe_error_gradient = pbe_gradient - wb97m_gradient
+                pbe_error_gradient_norm = float(np.linalg.norm(pbe_error_gradient))
 
         # add the energies to the dataframe
         energies = pd.concat(
@@ -352,6 +362,7 @@ def main() -> int:
                             "GXTBErrorGradientNorm": [gxtb_error_gradient_norm],
                             "R2SCAN3CErrorGradientNorm": [r2scan3c_error_gradient_norm],
                             "GFN2XTBErrorGradientNorm": [gfn2xtb_error_gradient_norm],
+                            "PBEErrorGradientNorm": [pbe_error_gradient_norm],
                         }
                     ),
                 ],
