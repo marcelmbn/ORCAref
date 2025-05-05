@@ -248,6 +248,13 @@ def statistics(energies: pd.DataFrame) -> None:
     print(energies.describe())
     print(energies.corr())
 
+    # print the 20 largest errors for each method
+    for col in energies.columns[1:]:
+        print(f"20 largest errors for {col}:")
+        print(energies[col].nlargest(20))
+        print(f"20 smallest errors for {col}:")
+        print(energies[col].nsmallest(20))
+
 
 def main() -> int:
     """
