@@ -248,12 +248,16 @@ def statistics(energies: pd.DataFrame) -> None:
     print(energies.describe())
     print(energies.corr())
 
-    # print the 20 largest errors for each method
+    # Print the lines with the 20 largest absolute values
+    print("Largest absolute values:")
     for col in energies.columns[1:]:
-        print(f"20 largest errors for {col}:")
-        print(energies[col].nlargest(20))
-        print(f"20 smallest errors for {col}:")
-        print(energies[col].nsmallest(20))
+        print(f"Column {col}:")
+        print(
+            energies.loc[
+                energies[col].abs().nlargest(20).index,
+                ["Molecule", col],
+            ]
+        )
 
 
 def main() -> int:
