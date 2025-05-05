@@ -99,6 +99,8 @@ def parse_control_file(file_path: Path) -> float:
         subenergy_lines: list[str] = []
         for line in file:
             line = line.strip()
+            if not line:
+                continue
             if line.startswith("$subenergy"):
                 inside_subenergy_block = True
                 continue
@@ -106,8 +108,15 @@ def parse_control_file(file_path: Path) -> float:
                 inside_subenergy_block and line.startswith("$")
             ):
                 break
-            if inside_subenergy_block and line and line[0].isdigit():
-                subenergy_lines.append(line)
+            if inside_subenergy_block:
+                # check if first entry can be a float
+                try:
+                    float(line.split()[0])
+                except ValueError as e:
+                    raise ValueError(f"Error parsing a float from line '{line}'") from e
+                subenergy_lines.append(
+                    line.strip()
+                )  # Added strip() to clean up the line
         if not subenergy_lines:
             raise ValueError("No SCF energy entries found between $subenergy and $end.")
         # Get the last SCF line and extract the total energy
