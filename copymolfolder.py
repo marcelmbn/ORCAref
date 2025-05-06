@@ -140,6 +140,68 @@ PSE_NUMBERS: dict[str, int] = {k.lower(): v for v, k in PSE.items()}
 PSE_SYMBOLS: dict[int, str] = {v: k.lower() for v, k in PSE.items()}
 
 
+class Population:
+    """
+    Class to store the population information.
+
+    Contains
+    - atom type: atom number (int) and atom symbol (str)
+    - Mulliken charge (float)
+    - s, p, d, f, g populations (float)
+    """
+
+    def __init__(self, atom: int):
+        self.atom = atom
+        self.ati: int | None = None
+        # Mulliken charges and populations
+        self.mull_q: float | None = None
+        self.mull_p_s: float | None = None
+        self.mull_p_p: float | None = None
+        self.mull_p_d: float | None = None
+        self.mull_p_f: float | None = None
+        self.mull_p_g: float | None = None
+        # Mulliken spin populations
+        self.mull_spinpop: float | None = None
+        self.mull_spinpop_s: float | None = None
+        self.mull_spinpop_p: float | None = None
+        self.mull_spinpop_d: float | None = None
+        self.mull_spinpop_f: float | None = None
+        self.mull_spinpop_g: float | None = None
+
+    def __str__(self):
+        returnstr = f"Atom: {self.atom}\n"
+        if self.ati is not None:
+            returnstr += f"Atom type: {PSE_SYMBOLS[self.ati]}\n"
+        if self.mull_q is not None:
+            returnstr += f"Mulliken charge: {self.mull_q:8.5f}\n"
+        if self.mull_p_s is not None:
+            returnstr += f"Mulliken population 's': {self.mull_p_s:8.5f}\n"
+        if self.mull_p_p is not None:
+            returnstr += f"Mulliken population 'p': {self.mull_p_p:8.5f}\n"
+        if self.mull_p_d is not None:
+            returnstr += f"Mulliken population 'd': {self.mull_p_d:8.5f}\n"
+        if self.mull_p_f is not None:
+            returnstr += f"Mulliken population 'f': {self.mull_p_f:8.5f}\n"
+        if self.mull_p_g is not None:
+            returnstr += f"Mulliken population 'g': {self.mull_p_g:8.5f}\n"
+        # if self.mull_spinpop is not None: print spin populations in a similar fashion
+        if self.mull_spinpop is not None:
+            # first print a separation line
+            returnstr += "-" * 80 + "\n"
+            returnstr += f"Mulliken spin population: {self.mull_spinpop:8.5f}\n"
+        if self.mull_spinpop_s is not None:
+            returnstr += f"Mulliken spin population 's': {self.mull_spinpop_s:8.5f}\n"
+        if self.mull_spinpop_p is not None:
+            returnstr += f"Mulliken spin population 'p': {self.mull_spinpop_p:8.5f}\n"
+        if self.mull_spinpop_d is not None:
+            returnstr += f"Mulliken spin population 'd': {self.mull_spinpop_d:8.5f}\n"
+        if self.mull_spinpop_f is not None:
+            returnstr += f"Mulliken spin population 'f': {self.mull_spinpop_f:8.5f}\n"
+        if self.mull_spinpop_g is not None:
+            returnstr += f"Mulliken spin population 'g': {self.mull_spinpop_g:8.5f}\n"
+        return returnstr
+
+
 def get_lanthanides() -> list[int]:
     """
     Get the atomic numbers of lanthanides.
@@ -230,6 +292,275 @@ def parse_orca_hirshfeld(orca_out: str) -> list[float]:
                     break
                 charges.append(float(lines[j].split()[2]))
     return charges
+
+
+def parse_mulliken_reduced_orbital_charges(
+    populations: list[Population], orca_output: str, nat: int, openshell: bool = False
+) -> list[Population]:
+    """
+    Parse the ORCA output file and extract the Mulliken reduced orbital charges.
+
+    The part looks as follows:
+    ```
+    --------------------------------
+    MULLIKEN REDUCED ORBITAL CHARGES
+    --------------------------------
+      0 O s       :     1.733068  s :     1.733068
+          pz      :     1.625117  p :     4.757872
+          px      :     1.582040
+          py      :     1.550715
+          dz2     :     0.008794  d :     0.052880
+          dxz     :     0.007340
+          dyz     :     0.015704
+          dx2y2   :     0.010845
+          dxy     :     0.010195
+
+      1 C s       :     0.962153  s :     0.962153
+          pz      :     1.074845  p :     2.777703
+          px      :     0.782766
+          py      :     0.920092
+          dz2     :     0.020886  d :     0.232749
+          dxz     :     0.036019
+          dyz     :     0.070005
+          dx2y2   :     0.072115
+          dxy     :     0.033725
+
+      2 C s       :     1.020250  s :     1.020250
+          pz      :     1.065344  p :     3.120061
+          ...
+    ```
+    """
+    # First parse the Mulliken atomic charges
+    # split the content by lines
+    lines = orca_output.split("\n")
+    # iterate over the lines
+    for i, line in enumerate(lines):
+        # check if the line contains the Mulliken reduced orbital charges
+        if "MULLIKEN REDUCED ORBITAL CHARGES" in line:
+            # iterate over the lines after the line with the header
+            atom_number: str | int | None
+            last_atom = False
+            for j in range(i + 2, len(lines)):
+                # if SPIN in line: break
+                if "SPIN" in lines[j]:
+                    break
+                # check if the line is empty
+                if "s :" in lines[j]:
+                    # split the line by ":"
+                    atom_information, _, mull_s = lines[j].split(":")
+                    atom_num_sym_angmom = atom_information.strip().split()
+                    # check if it contains two or three elements
+                    if len(atom_num_sym_angmom) == 2:
+                        atom_number, atom_symbol = atom_num_sym_angmom
+                    elif len(atom_num_sym_angmom) == 3:
+                        atom_number, atom_symbol, _ = atom_num_sym_angmom
+                    atom_number = int(atom_number)  # type: ignore
+                    if atom_number >= nat - 1:
+                        last_atom = True
+                    # append the atom and charge to the list
+                    populations[atom_number].mull_p_s = float(mull_s)
+                if "p :" in lines[j]:
+                    if atom_number is None or not isinstance(atom_number, int):
+                        raise ValueError("No atom number found.")
+                    # split the line by ":"
+                    _, _, mull_p = lines[j].split(":")
+                    populations[atom_number].mull_p_p = float(mull_p.strip())
+                if "d :" in lines[j]:
+                    if atom_number is None or not isinstance(atom_number, int):
+                        raise ValueError("No atom number found.")
+                    # split the line by ":"
+                    _, _, mull_d = lines[j].split(":")
+                    populations[atom_number].mull_p_d = float(mull_d.strip())
+                if "f :" in lines[j]:
+                    if atom_number is None or not isinstance(atom_number, int):
+                        raise ValueError("No atom number found.")
+                    # split the line by ":"
+                    _, _, mull_f = lines[j].split(":")
+                    populations[atom_number].mull_p_f = float(mull_f.strip())
+                if "g :" in lines[j]:
+                    if atom_number is None or not isinstance(atom_number, int):
+                        raise ValueError("No atom number found.")
+                    # split the line by ":"
+                    _, _, mull_g = lines[j].split(":")
+                    populations[atom_number].mull_p_g = float(mull_g.strip())
+                if lines[j].strip() == "":
+                    atom_number = None
+                    if last_atom:
+                        break
+    if openshell:
+        # iterate over the lines
+        for i, line in enumerate(lines):
+            # check if the line contains the Mulliken reduced orbital charges
+            if "MULLIKEN REDUCED ORBITAL CHARGES AND SPIN POPULATIONS" in line:
+                # iterate over the lines after the line with the header
+                start_spin_pops = False
+                last_atom = False
+                for j in range(i + 2, len(lines)):
+                    if "SPIN" in lines[j]:
+                        start_spin_pops = True
+                    if not start_spin_pops:
+                        continue
+                    # check if the line is empty
+                    if "s :" in lines[j]:
+                        # split the line by ":"
+                        atom_information, _, mull_s = lines[j].split(":")
+                        atom_num_sym_angmom = atom_information.strip().split()
+                        # check if it contains two or three elements
+                        if len(atom_num_sym_angmom) == 2:
+                            atom_number, atom_symbol = atom_num_sym_angmom
+                        elif len(atom_num_sym_angmom) == 3:
+                            atom_number, atom_symbol, _ = atom_num_sym_angmom
+                        atom_number = int(atom_number)  # type: ignore
+                        if atom_number >= nat - 1:
+                            last_atom = True
+                        # append the atom and charge to the list
+                        populations[atom_number].mull_spinpop_s = float(mull_s)
+                    if "p :" in lines[j]:
+                        if atom_number is None or not isinstance(atom_number, int):
+                            raise ValueError("No atom number found.")
+                        # split the line by ":"
+                        _, _, mull_p = lines[j].split(":")
+                        populations[atom_number].mull_spinpop_p = float(mull_p.strip())
+                    if "d :" in lines[j]:
+                        if atom_number is None or not isinstance(atom_number, int):
+                            raise ValueError("No atom number found.")
+                        # split the line by ":"
+                        _, _, mull_d = lines[j].split(":")
+                        populations[atom_number].mull_spinpop_d = float(mull_d.strip())
+                    if "f :" in lines[j]:
+                        if atom_number is None or not isinstance(atom_number, int):
+                            raise ValueError("No atom number found.")
+                        # split the line by ":"
+                        _, _, mull_f = lines[j].split(":")
+                        populations[atom_number].mull_spinpop_f = float(mull_f.strip())
+                    if "g :" in lines[j]:
+                        if atom_number is None or not isinstance(atom_number, int):
+                            raise ValueError("No atom number found.")
+                        # split the line by ":"
+                        _, _, mull_g = lines[j].split(":")
+                        populations[atom_number].mull_spinpop_g = float(mull_g.strip())
+                    if lines[j].strip() == "":
+                        atom_number = None
+                        if last_atom:
+                            break
+
+    return populations
+
+
+def parse_orca_mulliken_charges(
+    populations: list[Population], orca_output: str, openshell: bool = False
+) -> list[Population]:
+    """
+    Parse the ORCA output file and extract the Mulliken population analysis.
+    """
+    # First parse the Mulliken atomic charges
+    # split the content by lines
+    lines = orca_output.split("\n")
+    # iterate over the lines
+    for i, line in enumerate(lines):
+        # check if the line contains the Mulliken atomic charges
+        if "MULLIKEN ATOMIC CHARGES" in line:
+            # iterate over the lines after the line with the header
+            for j in range(i + 2, len(lines)):
+                # check if the line is empty
+                if lines[j].strip() == "":
+                    break
+                if "Sum of atomic charges" in lines[j]:
+                    break
+                # split the line by ":"
+                atom, charge = lines[j].split(":")
+                atom_number: str | int
+                atom_number, atom_symbol = atom.split()
+                atom_number = int(atom_number)
+
+                if openshell:
+                    charge, spin_pop = charge.split()
+                # append the atom and charge to the list
+                populations[atom_number].mull_q = float(charge)
+                populations[atom_number].ati = PSE_NUMBERS[atom_symbol.lower()]
+                if openshell:
+                    populations[atom_number].mull_spinpop = float(spin_pop)
+    return populations
+
+
+def write_tm_mulliken(
+    pops: list[Population], filename: str | Path, openshell: bool = False
+) -> None:
+    """
+    Write the Mulliken population information in the TM output format.
+    ```
+        atomic populations from total density:
+
+     atom      charge    n(s)      n(p)      n(d)      n(f)      n(g)
+         1ce     1.78562   4.00840  12.04756  10.91160   1.24681
+         2f     -0.59626   1.97543   5.62083
+         3f     -0.59624   1.97543   5.62081
+         4f     -0.59311   1.97544   5.61767
+    ```
+    if open shell:
+
+    ```
+     Unpaired electrons from D(alpha)-D(beta)
+
+     atom      total     n(s)      n(p)      n(d)      n(f)      n(g)
+         1ce     1.02700   0.00016  -0.00016   0.02946   0.99754
+         2f     -0.00800  -0.00015  -0.00785
+         3f     -0.00800  -0.00015  -0.00786
+         4f     -0.01099  -0.00015  -0.01084
+    ```
+    """
+    tm_mull = "    atomic populations from total density:\n\n"
+    tm_mull += "atom      charge    n(s)      n(p)      n(d)      n(f)      n(g)\n"
+    for pop in pops:
+        if pop.ati is None:
+            raise ValueError("No atom type found.")
+        tm_mull += f"    {pop.atom:>3}{PSE_SYMBOLS[pop.ati]:<2}     "
+        tm_mull += f"{pop.mull_q:8.5f}   "
+        tm_mull += f"{pop.mull_p_s:8.5f}  " if pop.mull_p_s is not None else " " * 12
+        tm_mull += f"{pop.mull_p_p:8.5f}  " if pop.mull_p_p is not None else " " * 12
+        tm_mull += f"{pop.mull_p_d:8.5f}  " if pop.mull_p_d is not None else " " * 12
+        tm_mull += f"{pop.mull_p_f:8.5f}  " if pop.mull_p_f is not None else " " * 12
+        tm_mull += f"{pop.mull_p_g:8.5f}  " if pop.mull_p_g is not None else " " * 12
+        tm_mull += "\n"
+
+    # if spin populations are present, print them as well
+    if openshell:
+        tm_mull += "\n    Unpaired electrons from D(alpha)-D(beta)\n\n"
+        tm_mull += "atom      total     n(s)      n(p)      n(d)      n(f)      n(g)\n"
+        for pop in pops:
+            if pop.ati is None:
+                raise ValueError("No atom type found.")
+            tm_mull += f"    {pop.atom:>3}{PSE_SYMBOLS[pop.ati]:<2}     "
+            tm_mull += f"{pop.mull_spinpop:8.5f}   "
+            tm_mull += (
+                f"{pop.mull_spinpop_s:8.5f}  "
+                if pop.mull_spinpop_s is not None
+                else " " * 12
+            )
+            tm_mull += (
+                f"{pop.mull_spinpop_p:8.5f}  "
+                if pop.mull_spinpop_p is not None
+                else " " * 12
+            )
+            tm_mull += (
+                f"{pop.mull_spinpop_d:8.5f}  "
+                if pop.mull_spinpop_d is not None
+                else " " * 12
+            )
+            tm_mull += (
+                f"{pop.mull_spinpop_f:8.5f}  "
+                if pop.mull_spinpop_f is not None
+                else " " * 12
+            )
+            tm_mull += (
+                f"{pop.mull_spinpop_g:8.5f}  "
+                if pop.mull_spinpop_g is not None
+                else " " * 12
+            )
+            tm_mull += "\n"
+
+    with open(filename, "w", encoding="utf8") as tm_out:
+        tm_out.write(tm_mull)
 
 
 def parse_orca_gradient(orca_out: str) -> list[list[float]]:
@@ -417,7 +748,14 @@ class Molecule:
         if file_path.with_suffix(".UHF").exists():
             molecule.read_uhf_from_file(file_path.with_suffix(".UHF"))
         else:
-            molecule.uhf = 0
+            # molecule.num_atoms is added to account for the 0-based indexing of the
+            # molecule.ati array
+            nel = sum(molecule.ati) + molecule.num_atoms - molecule.charge
+            if nel % 2 == 0:
+                molecule.uhf = 0
+            else:
+                print("Odd number of electrons detected. Setting UHF to 1.")
+                molecule.uhf = 1
         molecule.name = file_path.stem
         return molecule
 
@@ -446,16 +784,23 @@ class Molecule:
         else:
             raise TypeError("String or Path expected.")
         molecule.read_xyz_from_coord(file_path)
-        uhf_path = file_path.parent / ".UHF"
-        if uhf_path.exists():
-            molecule.read_uhf_from_file(uhf_path)
-        else:
-            molecule.uhf = 0
         chrg_path = file_path.parent / ".CHRG"
         if chrg_path.exists():
             molecule.read_charge_from_file(chrg_path)
         else:
             molecule.charge = 0
+        uhf_path = file_path.parent / ".UHF"
+        if uhf_path.exists():
+            molecule.read_uhf_from_file(uhf_path)
+        else:
+            # molecule.num_atoms is added to account for the 0-based indexing of the
+            # molecule.ati array
+            nel = sum(molecule.ati) + molecule.num_atoms - molecule.charge
+            if nel % 2 == 0:
+                molecule.uhf = 0
+            else:
+                print("Odd number of electrons detected. Setting UHF to 1.")
+                molecule.uhf = 1
         return molecule
 
     @property
@@ -1309,7 +1654,8 @@ def process_molecule_directory(
     # check if the source and target elements are neighbours in the periodic table
     if not check_if_neighbours(source_element, arguments.target):
         raise ValueError(
-            f"Source ({source_element}) and target ({arguments.target}) elements are not neighbours in the periodic table."
+            f"Source ({source_element}) and target "
+            + f"({arguments.target}) elements are not neighbours in the periodic table."
         )
 
     for molecule_dir in source_dir.iterdir():
@@ -1334,7 +1680,11 @@ def process_molecule_directory(
         # if the molecule consists of only one atom, copy the whole directory and continue
         if molecule.num_atoms == 1:
             print("Only one atom in molecule. Simple copying...")
-            sh.copytree(molecule_dir, target_dir / molecule_dir.name)
+            # if directory already exists, skip the molecule
+            if (target_dir / molecule_dir.name).exists():
+                print(f"Directory {target_dir / molecule_dir.name} already exists.")
+            else:
+                sh.copytree(molecule_dir, target_dir / molecule_dir.name)
             continue
 
         # skip calculation if the molecule has no actinides
@@ -1413,7 +1763,7 @@ def process_molecule_directory(
             ):
                 print(
                     f"\tNumber of unpaired electrons ({tmp_molecule.uhf}) in the molecule is larger than "
-                    + f"the calculated number of f and d electrons ({calculate_f_electrons(tmp_molecule.atlist)})."
+                    + f"the calculated number of f electrons ({calculate_f_electrons(tmp_molecule.atlist)})."
                 )
                 open_shell_energy = 0.0
             else:
@@ -1625,6 +1975,19 @@ def postprocess_molecule(mol: Molecule, calc_dir: Path, orca_file: str, verbosit
     # convert ati to a list of PSE symbols
     symbols = [PSE[elem + 1] for elem in ati]
     write_tm_gradient(gradient, xyz, symbols, mol.energy, tm_ref_dir / "gradient")  # type: ignore
+    # set up a list of Population objects
+    populations = [Population(i + 1) for i in range(mol.num_atoms)]
+    # mulliken_charges contains the Mulliken atomic charges with atom number as key and charge as value
+    openshell = False
+    if mol.uhf > 0:
+        openshell = True
+    populations = parse_orca_mulliken_charges(populations, orca_output, openshell)
+    populations = parse_mulliken_reduced_orbital_charges(
+        populations, orca_output, mol.num_atoms, openshell=openshell
+    )
+
+    # write the TM output file
+    write_tm_mulliken(populations, tm_ref_dir / "scf.out", openshell)
 
 
 # Command-line interface
