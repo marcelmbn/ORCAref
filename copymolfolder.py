@@ -1331,10 +1331,17 @@ def process_molecule_directory(
                 f"Error reading molecule: {e}\nSkipping molecule {molecule_dir.name}..."
             )
             continue
+        # if the molecule consists of only one atom, copy the whole directory and continue
+        if molecule.num_atoms == 1:
+            print("Only one atom in molecule. Simple copying...")
+            sh.copytree(molecule_dir, target_dir / molecule_dir.name)
+            continue
 
         # skip calculation if the molecule has no actinides
         check_uhf: bool = True
-        if not any(atomtype >= 88 for atomtype in molecule.ati):
+        if not any(
+            (atomtype >= 88 or 56 <= atomtype <= 70) for atomtype in molecule.ati
+        ):
             print("No actinides in molecule. Simple copying...")
             check_uhf = False
             # TODO: copy the molecule_dir to the target directory and continue
