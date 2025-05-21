@@ -402,37 +402,16 @@ def main() -> None:
     args = parser.parse_args()
 
     def parse_cell_input(cell_str):
-        # Accepts comma-separated list of row,col pairs (e.g. "3,2,4,2,4,3")
-        # or ranges using dashes (e.g. "3,2-4,2" means (3,2), (4,2))
-        parts = cell_str.replace(" ", "").split(",")
+        # Accepts semicolon-separated list of row,col pairs (e.g. "3,2;4,2;4,3")
+        # or ranges using dashes (e.g. "3-4,2" means (3,2), (4,2))
+        parts = cell_str.replace(" ", "").split(";")
         cells = []
-        i = 0
-        while i < len(parts) - 1:
-            row_part = parts[i]
-            col_part = parts[i + 1]
-            # Support ranges like 3-4,2 for rows or columns
-            if "-" in row_part:
-                row_start, row_end = map(int, row_part.split("-"))
-                col = int(col_part)
-                for row in range(row_start, row_end + 1):
-                    cells.append((row, col))
-                i += 2
-            elif "-" in col_part:
-                col_start, col_end = map(int, col_part.split("-"))
-                row = int(row_part)
-                for col in range(col_start, col_end + 1):
-                    cells.append((row, col))
-                i += 2
-            else:
-                try:
-                    row = int(row_part)
-                    col = int(col_part)
-                    cells.append((row, col))
-                except ValueError:
-                    raise ValueError(
-                        f"Cell indices must be integers: '{row_part},{col_part}'"
-                    )
-                i += 2
+        for part in parts:
+            row_col = part.split(",")
+            if len(row_col) != 2:
+                raise ValueError(f"Invalid format for cell: '{part}'")
+            row, col = map(int, row_col)
+            cells.append((row, col))
         return cells
 
     cell_list = parse_cell_input(args.cell)
