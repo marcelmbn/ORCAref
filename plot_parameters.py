@@ -13,8 +13,6 @@ import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-import numpy as np
-
 
 class PeriodicTable:
     """
@@ -229,163 +227,25 @@ class ParameterData:
             )
         # Flatten the block (list of lists) into a single list of floats.
         flat_list = [value for row in block for value in row]
-        if not (1 <= par_index <= len(flat_list)):
+        if not 1 <= par_index <= len(flat_list):
             raise IndexError(
                 f"Parameter index {par_index} out of range for element {atomic_number}"
             )
         return flat_list[par_index - 1]
 
 
-class ParameterPlotter:
-    """
-    Plots a given parameter (selected by its index) for elements in the same period and group.
-    """
-
-    def __init__(
-        self, param_data: ParameterData, periodic_table: PeriodicTable
-    ) -> None:
-        self.param_data = param_data
-        self.periodic_table = periodic_table
-
-    def plot_parameter_cell(self, cell: tuple[int, int], element: int) -> None:
-        row, col = cell
-        # Check the reference element first; if its cell is missing, raise an error.
-        ref_val = self.param_data.get_parameter_cell(element, row, col)
-        period = self.periodic_table.get_period(element)
-        group = self.periodic_table.get_group(element)
-        symbol = self.periodic_table.get_symbol(element)
-
-        # Define period_elements and group_elements.
-        period_elements = sorted(
-            self.periodic_table.get_elements_in_period(period), key=lambda x: x[0]
-        )
-        group_elements = sorted(
-            self.periodic_table.get_elements_in_group(group), key=lambda x: x[0]
-        )
-
-        # For x-axis, use label: Symbol:Z
-        # Gather data for the period line (left to right in the period).
-        period_x = []
-        period_y = []
-        for Z, _ in period_elements:
-            try:
-                y_val = self.param_data.get_parameter_cell(Z, row, col)
-                x_label = f"{self.periodic_table.get_symbol(Z)}: {Z}"
-                period_x.append(x_label)
-                period_y.append(y_val)
-            except ValueError:
-                continue
-
-        # Gather data for the group line (top to bottom in the group).
-        group_x = []
-        group_y = []
-        for Z, data in group_elements:
-            try:
-                y_val = self.param_data.get_parameter_cell(Z, row, col)
-                x_label = f"{self.periodic_table.get_symbol(Z)}: {Z}"
-                group_x.append(x_label)
-                group_y.append(y_val)
-            except ValueError:
-                continue
-
-        # Prepare plot
-        fig, ax = plt.subplots(figsize=(10, 6))
-
-        # Plot period trend (atomic number left to right)
-        ax.plot(
-            period_x,
-            period_y,
-            marker="o",
-            label=f"{symbol}({element}) - Period {period}",
-        )
-
-        # Plot group trend (atomic number for group, but keep the style)
-        ax.plot(
-            group_x,
-            group_y,
-            marker="s",
-            label=f"{symbol}({element}) - Group {group}",
-        )
-
-        # Set x-ticks using the combined x_label set
-        all_x = list(dict.fromkeys(period_x + group_x))
-        ax.set_xticks(all_x)
-        ax.set_xticklabels(all_x, rotation=90)
-        ax.set_xlabel("Element (Symbol: Atomic Number)")
-        ax.set_ylabel(f"Value from row {row}, column {col}")
-        ax.legend()
-        ax.set_title(
-            f"Parameter (row {row}, col {col}) trends across Period and Group\n"
-            f"(Reference element: {symbol}({element}))"
-        )
-        plt.tight_layout()
-        plt.show()
-
-    def plot_parameter(self, par_index: int, element: int) -> None:
-        # Determine period and group for the provided element.
-        period = self.periodic_table.get_period(element)
-        group = self.periodic_table.get_group(element)
-        symbol = self.periodic_table.get_symbol(element)
-
-        # Gather elements in the same period.
-        period_elements = sorted(
-            self.periodic_table.get_elements_in_period(period), key=lambda x: x[0]
-        )
-        period_x: list[str] = []
-        period_y: list[float] = []
-        for Z, _ in period_elements:
-            try:
-                y_val = self.param_data.get_parameter(Z, par_index)
-                x_label = f"{self.periodic_table.get_symbol(Z)}: {Z}"
-                period_x.append(x_label)
-                period_y.append(y_val)
-            except Exception:
-                # Skip if parameter data is not available.
-                continue
-
-        # Gather elements in the same group.
-        group_elements = sorted(
-            self.periodic_table.get_elements_in_group(group), key=lambda x: x[0]
-        )
-        group_x: list[str] = []
-        group_y: list[float] = []
-        for Z, _ in group_elements:
-            try:
-                y_val = self.param_data.get_parameter(Z, par_index)
-                x_label = f"{self.periodic_table.get_symbol(Z)}: {Z}"
-                group_x.append(x_label)
-                group_y.append(y_val)
-            except Exception:
-                continue
-
-        # Plotting the data.
-        plt.figure(figsize=(10, 6))
-        plt.plot(period_x, period_y, marker="o", label=f"Period {period}")
-        plt.plot(group_x, group_y, marker="s", label=f"Group {group}")
-        # Use the combined x_label set for ticks
-        all_x = list(dict.fromkeys(period_x + group_x))
-        plt.xticks(all_x, all_x, rotation=90)
-        plt.xlabel("Element (Symbol: Atomic Number)")
-        plt.ylabel(f"Parameter {par_index} Value")
-        plt.title(
-            f"Parameter {par_index} for elements in Period {period} and Group {group}\n"
-            f"(Reference element: {symbol}({element}))"
-        )
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot parameter cell(s) (row,col) from a block of parameters for elements in the same period and group."
+        description="Plot parameter cell(s) (row,col) from a block of parameters "
+        + "for elements in the same period and group."
     )
     parser.add_argument(
         "--cell",
         type=str,
         required=True,
-        help="Cell(s) in the parameter block. Accepts one or more 'row,col' pairs separated by commas, or ranges using dashes. Example: '3,2,4,2-4,3' means (3,2), (4,2), (4,3).",
+        help="Cell(s) in the parameter block. "
+        + "Accepts one or more 'row,col' pairs separated by commas, or ranges using dashes. "
+        + "Example: '3,2,4,2-4,3' means (3,2), (4,2), (4,3).",
     )
     parser.add_argument(
         "--element",
@@ -420,83 +280,77 @@ def main() -> None:
 
     pt = PeriodicTable()
     param_data = ParameterData(args.param_file)
-    plotter = ParameterPlotter(param_data, pt)
 
-    # If only one cell, plot as before. If multiple, combine all lines in a single plot.
+    # For each cell, gather period and group data, plot all lines in one plot.
+    _, ax = plt.subplots(figsize=(10, 6))
+    symbol = pt.get_symbol(args.element)
+    period = pt.get_period(args.element)
+    group = pt.get_group(args.element)
+    ylabels = []
+    for _, (row, col) in enumerate(cell_list):
+        # period line
+        period_elements = sorted(pt.get_elements_in_period(period), key=lambda x: x[0])
+        period_z = []
+        period_y = []
+        for z, _ in period_elements:
+            try:
+                y_val = param_data.get_parameter_cell(z, row, col)
+                period_z.append(z)
+                period_y.append(y_val)
+            except Exception:
+                continue
+        ax.plot(
+            period_z,
+            period_y,
+            marker="o",
+            label=f"Cell ({row},{col}) - Period {period}",
+        )
+        # group line
+        group_elements = sorted(pt.get_elements_in_group(group), key=lambda x: x[0])
+        group_z = []
+        group_y = []
+        for z, _ in group_elements:
+            try:
+                y_val = param_data.get_parameter_cell(z, row, col)
+                group_z.append(z)
+                group_y.append(y_val)
+            except Exception:
+                continue
+        ax.plot(
+            group_z,
+            group_y,
+            marker="s",
+            label=f"Cell ({row},{col}) - Group {group}",
+        )
+        ylabels.append(f"({row},{col})")
+    # Set x-ticks using atomic number (Z) as tick labels
+    all_z = sorted(
+        set(
+            z
+            for (row, col) in cell_list
+            for z in (
+                [z for (z, _) in pt.get_elements_in_period(period)]
+                + [z for (z, _) in pt.get_elements_in_group(group)]
+            )
+        )
+    )
+    ax.set_xticks(all_z)
+    ax.set_xticklabels([f"{pt.get_symbol(z)}: {z}" for z in all_z], rotation=90)
+    ax.set_xlabel("Atomic Number (Z)")
+    # Improved ylabel if multiple cells
     if len(cell_list) == 1:
-        plotter.plot_parameter_cell(cell_list[0], args.element)
+        ax.set_ylabel(f"Parameter Value {ylabels[0]}")
     else:
-        # For each cell, gather period and group data, plot all lines in one plot.
-        fig, ax = plt.subplots(figsize=(10, 6))
-        symbol = pt.get_symbol(args.element)
-        period = pt.get_period(args.element)
-        group = pt.get_group(args.element)
-        ylabels = []
-        for idx, (row, col) in enumerate(cell_list):
-            # period line
-            period_elements = sorted(
-                pt.get_elements_in_period(period), key=lambda x: x[0]
-            )
-            period_Z = []
-            period_y = []
-            for Z, _ in period_elements:
-                try:
-                    y_val = param_data.get_parameter_cell(Z, row, col)
-                    period_Z.append(Z)
-                    period_y.append(y_val)
-                except Exception:
-                    continue
-            ax.plot(
-                period_Z,
-                period_y,
-                marker="o",
-                label=f"Cell ({row},{col}) - Period {period}",
-            )
-            # group line
-            group_elements = sorted(pt.get_elements_in_group(group), key=lambda x: x[0])
-            group_Z = []
-            group_y = []
-            for Z, _ in group_elements:
-                try:
-                    y_val = param_data.get_parameter_cell(Z, row, col)
-                    group_Z.append(Z)
-                    group_y.append(y_val)
-                except Exception:
-                    continue
-            ax.plot(
-                group_Z,
-                group_y,
-                marker="s",
-                label=f"Cell ({row},{col}) - Group {group}",
-            )
-            ylabels.append(f"({row},{col})")
-        # Set x-ticks using atomic number (Z) as tick labels
-        all_Z = sorted(
-            set(
-                Z
-                for (row, col) in cell_list
-                for Z in (
-                    [Z for (Z, _) in pt.get_elements_in_period(period)]
-                    + [Z for (Z, _) in pt.get_elements_in_group(group)]
-                )
-            )
-        )
-        ax.set_xticks(all_Z)
-        ax.set_xticklabels([f"{pt.get_symbol(Z)}: {Z}" for Z in all_Z], rotation=90)
-        ax.set_xlabel("Atomic Number (Z)")
-        # Improved ylabel if multiple cells
-        if len(cell_list) == 1:
-            ax.set_ylabel(f"Parameter Value {ylabels[0]}")
-        else:
-            ax.set_ylabel(f"Parameter Value (cells: {', '.join(ylabels)})")
-        ax.legend()
-        ax.set_title(
-            f"Parameter trends across Periods and Groups\n"
-            f"Cells: {', '.join([f'({r},{c})' for (r, c) in cell_list])}, Reference element: {symbol}({args.element})"
-        )
-        # Add extra space at the bottom for rotated labels
-        plt.tight_layout()
-        plt.show()
+        ax.set_ylabel(f"Parameter Value (cells: {', '.join(ylabels)})")
+    ax.legend()
+    ax.set_title(
+        f"Parameter trends across Periods and Groups\n"
+        f"Cells: {', '.join([f'({r},{c})' for (r, c) in cell_list])}, "
+        + f"Reference element: {symbol}({args.element})"
+    )
+    # Add extra space at the bottom for rotated labels
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == "__main__":
