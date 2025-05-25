@@ -4,8 +4,8 @@ Plot parameter values from a semiempirical parameter file over the period and th
 of a specified element.
 
 Usage example:
-    python plot_parameters.py --par 1 --element 5
-This will plot parameter 1 (1-indexed) for all elements in the period of atomic number 5
+    python plot_parameters.py --cell "1,1" --element 5
+This will plot the parameter cell (row 1, col 1) for all elements in the period of atomic number 5
 and for all elements in the group of atomic number 5, all in one plot.
 """
 
@@ -215,24 +215,6 @@ class ParameterData:
             )
         return value
 
-    def get_parameter(self, atomic_number: int, par_index: int) -> float:
-        """
-        Returns the parameter (1-indexed) for the element with the given atomic number,
-        flattening the parameter block (a list of lists) into a single list.
-        """
-        block = self.data.get(atomic_number)
-        if block is None:
-            raise ValueError(
-                f"No parameter data found for atomic number {atomic_number}"
-            )
-        # Flatten the block (list of lists) into a single list of floats.
-        flat_list = [value for row in block for value in row]
-        if not 1 <= par_index <= len(flat_list):
-            raise IndexError(
-                f"Parameter index {par_index} out of range for element {atomic_number}"
-            )
-        return flat_list[par_index - 1]
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -243,9 +225,7 @@ def main() -> None:
         "--cell",
         type=str,
         required=True,
-        help="Cell(s) in the parameter block. "
-        + "Accepts one or more 'row,col' pairs separated by commas, or ranges using dashes. "
-        + "Example: '3,2,4,2-4,3' means (3,2), (4,2), (4,3).",
+        help="Cell(s) in the parameter block. Use semicolon-separated 'row,col' pairs (e.g. '1,1;2,2').",
     )
     parser.add_argument(
         "--element",
@@ -258,6 +238,12 @@ def main() -> None:
         type=Path,
         default=Path(".gxtb"),
         help="Path to the parameter file (default: .gxtb)",
+    )
+    parser.add_argument(
+        "--period", action="store_true", help="Plot only the period trend"
+    )
+    parser.add_argument(
+        "--group", action="store_true", help="Plot only the group trend"
     )
     args = parser.parse_args()
 
@@ -287,7 +273,9 @@ def main() -> None:
     period = pt.get_period(args.element)
     group = pt.get_group(args.element)
     ylabels = []
-    for _, (row, col) in enumerate(cell_list):
+    plot_period = args.period or not (args.period or args.group)
+    plot_group = args.group or not (args.period or args.group)
+    for row, col in cell_list:
         # period line
         period_elements = sorted(pt.get_elements_in_period(period), key=lambda x: x[0])
         period_z = []
@@ -297,14 +285,8 @@ def main() -> None:
                 y_val = param_data.get_parameter_cell(z, row, col)
                 period_z.append(z)
                 period_y.append(y_val)
-            except Exception:
+            except (ValueError, IndexError):
                 continue
-        ax.plot(
-            period_z,
-            period_y,
-            marker="o",
-            label=f"Cell ({row},{col}) - Period {period}",
-        )
         # group line
         group_elements = sorted(pt.get_elements_in_group(group), key=lambda x: x[0])
         group_z = []
@@ -314,28 +296,33 @@ def main() -> None:
                 y_val = param_data.get_parameter_cell(z, row, col)
                 group_z.append(z)
                 group_y.append(y_val)
-            except Exception:
+            except (ValueError, IndexError):
                 continue
-        ax.plot(
-            group_z,
-            group_y,
-            marker="s",
-            label=f"Cell ({row},{col}) - Group {group}",
-        )
+        if plot_period:
+            ax.plot(
+                period_z,
+                period_y,
+                marker="o",
+                label=f"Cell ({row},{col}) - Period {period}",
+            )
+        if plot_group:
+            ax.plot(
+                group_z,
+                group_y,
+                marker="s",
+                label=f"Cell ({row},{col}) - Group {group}",
+            )
         ylabels.append(f"({row},{col})")
     # Set x-ticks using atomic number (Z) as tick labels
-    all_z = sorted(
-        set(
-            z
-            for (row, col) in cell_list
-            for z in (
-                [z for (z, _) in pt.get_elements_in_period(period)]
-                + [z for (z, _) in pt.get_elements_in_group(group)]
-            )
-        )
-    )
-    ax.set_xticks(all_z)
-    ax.set_xticklabels([f"{pt.get_symbol(z)}: {z}" for z in all_z], rotation=90)
+    all_z: set[int] = set()
+    for row, col in cell_list:
+        if plot_period:
+            all_z.update(z for (z, _) in pt.get_elements_in_period(period))
+        if plot_group:
+            all_z.update(z for (z, _) in pt.get_elements_in_group(group))
+    all_z_list = list(sorted(all_z))
+    ax.set_xticks(all_z_list)
+    ax.set_xticklabels([f"{pt.get_symbol(z)}: {z}" for z in all_z_list], rotation=90)
     ax.set_xlabel("Atomic Number (Z)")
     # Improved ylabel if multiple cells
     if len(cell_list) == 1:
