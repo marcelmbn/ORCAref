@@ -225,6 +225,18 @@ def get_args() -> ap.Namespace:
         required=False,
         help="Use ORCA internal Hirshfeld charges.",
     )
+    parser.add_argument(
+        "--hessian",
+        action="store_true",
+        required=False,
+        help="Compute the Hessian with ORCA and write a TM-format 'hessian' file.",
+    )
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        required=False,
+        help="Use a lightweight STO-3G basis set for faster development runs.",
+    )
     # positional argument for the structure file
     parser.add_argument(
         "structure",
@@ -267,17 +279,27 @@ def execute_orca(orca_input: Path) -> tuple[Path, Path]:
 
 
 def write_orca_input(
-    mpi: int, chrg: int, uhf: int, heavy_ati: list[int] | None
+    mpi: int,
+    chrg: int,
+    uhf: int,
+    heavy_ati: list[int] | None,
+    hessian: bool,
+    dev: bool,
 ) -> Path:
     """
     Write the input file for ORCA.
     """
     orca_input = Path("tz.inp").resolve()
     with open(orca_input, "w", encoding="utf8") as f:
-        f.write("! wB97M-V def2-TZVPPD\n")
+        if dev:
+            f.write("! PBE STO-3G\n")
+        else:
+            f.write("! wB97M-V def2-TZVPPD\n")
         f.write("! NoTRAH\n")
         f.write("! StrongSCF DefGrid3\n")
         f.write("! EnGrad\n")
+        if hessian:
+            f.write("! NumFreq\n")
         f.write("! PrintBasis\n")
         if heavy_ati:
             f.write("! AutoAux\n")
@@ -941,6 +963,121 @@ def parse_gradient(file: Path) -> list[list[float]]:
     return gradient
 
 
+def parse_orca_hessian(hess_file: Path, natoms: int) -> list[list[float]]:
+    """
+    Parse the Cartesian Hessian from an ORCA .hess file.
+    """
+    if not hess_file.is_file():
+        raise FileNotFoundError(f"ORCA Hessian file '{hess_file}' not found.")
+
+    lines = hess_file.read_text(encoding="utf8").splitlines()
+    start_idx: int | None = None
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "$hessian":
+            start_idx = i + 1
+            break
+    if start_idx is None:
+        raise ValueError(f"Section '$hessian' not found in '{hess_file}'.")
+
+    section_lines: list[str] = []
+    for line in lines[start_idx:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("$"):
+            break
+        section_lines.append(stripped)
+
+    if not section_lines:
+        raise ValueError(f"No Hessian data found in '{hess_file}'.")
+
+    dim: int | None = None
+    first_tokens = section_lines[0].split()
+    if len(first_tokens) == 1 and first_tokens[0].isdigit():
+        dim = int(first_tokens[0])
+        section_lines = section_lines[1:]
+
+    if dim is None:
+        dim = 3 * natoms
+
+    def is_int_token_list(tokens: list[str]) -> bool:
+        return bool(tokens) and all(tok.lstrip("+-").isdigit() for tok in tokens)
+
+    uses_table_format = any(
+        is_int_token_list(line.split()) and len(line.split()) > 1
+        for line in section_lines
+    )
+
+    if uses_table_format:
+        matrix = [[0.0 for _ in range(dim)] for _ in range(dim)]
+        col_indices: list[int] = []
+        for line in section_lines:
+            tokens = line.split()
+            if not tokens:
+                continue
+            if is_int_token_list(tokens) and len(tokens) > 1:
+                col_indices = [int(tok) for tok in tokens]
+                continue
+            if not tokens[0].lstrip("+-").isdigit():
+                continue
+            if not col_indices:
+                raise ValueError("Hessian table missing column headers.")
+            row = int(tokens[0])
+            for col, val_str in zip(col_indices, tokens[1:], strict=False):
+                if row >= dim or col >= dim:
+                    raise ValueError(
+                        f"Hessian index out of bounds: row {row}, col {col}."
+                    )
+                matrix[row][col] = float(val_str.replace("D", "E").replace("d", "E"))
+        return matrix
+
+    values: list[float] = []
+    for line in section_lines:
+        for token in line.split():
+            values.append(float(token.replace("D", "E").replace("d", "E")))
+
+    total_full = dim * dim
+    total_tri = dim * (dim + 1) // 2
+    if len(values) == total_full:
+        return [values[i * dim : (i + 1) * dim] for i in range(dim)]
+    if len(values) == total_tri:
+        matrix = [[0.0 for _ in range(dim)] for _ in range(dim)]
+        idx = 0
+        for i in range(dim):
+            for j in range(i + 1):
+                val_float = values[idx]
+                idx += 1
+                matrix[i][j] = val_float
+                matrix[j][i] = val_float
+        return matrix
+
+    raise ValueError(
+        f"Unexpected Hessian size: got {len(values)} values, expected "
+        f"{total_full} (full) or {total_tri} (lower triangle)."
+    )
+
+
+def write_tm_hessian(hessian: list[list[float]], filename: str | Path) -> None:
+    """
+    Write the Hessian in Turbomole format to 'hessian'.
+    """
+    with open(filename, "w", encoding="utf8") as f:
+        f.write("$hessian\n")
+        dim = len(hessian)
+        block_size = 5
+        nblocks = (dim + block_size - 1) // block_size
+        for row_idx, row in enumerate(hessian, start=1):
+            for block_idx in range(1, nblocks + 1):
+                col_start = (block_idx - 1) * block_size
+                col_end = min(col_start + block_size, dim)
+                chunk = row[col_start:col_end]
+                line = f"{row_idx:3d} {block_idx:2d}"
+                for val in chunk:
+                    line += f" {val:13.10f}"
+                f.write(f"{line}\n")
+        f.write("$end\n")
+
+
 def write_tm_gradient(
     gradient: list[list[float]],
     xyz: list[list[float]],
@@ -1042,6 +1179,7 @@ def main() -> int:
                     heavy_atoms = [PSE_NUMBERS[symbol]]
                 else:
                     heavy_atoms.append(PSE_NUMBERS[symbol])
+    natoms = len(ati)
 
     # get number of electrons
     nel_raw = sum(ati)
@@ -1049,7 +1187,9 @@ def main() -> int:
     # get the charge and multiplicity from the .CHRG and .UHF files
     chrg, uhf = get_chrg_uhf(nel_raw)
 
-    orca_input_file = write_orca_input(args.mpi, chrg, uhf, heavy_atoms)
+    orca_input_file = write_orca_input(
+        args.mpi, chrg, uhf, heavy_atoms, args.hessian, args.dev
+    )
 
     # execute ORCA with the generated input file
     orca_output_file, _ = execute_orca(orca_input_file)
@@ -1097,6 +1237,10 @@ def main() -> int:
     print(f"Gradient: {gradient}")
     write_tm_gradient(gradient, xyz, symbols, energy)
     convert_orca_output(orca_output_file, openshell=uhf > 0)
+    if args.hessian:
+        hess_file = orca_input_file.with_suffix(".hess")
+        hessian = parse_orca_hessian(hess_file, natoms)
+        write_tm_hessian(hessian, "hessian")
     return 0
 
 
