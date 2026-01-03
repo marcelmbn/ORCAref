@@ -6,6 +6,7 @@ from pathlib import Path
 import argparse as ap
 import subprocess as sp
 import shutil as sh
+import re
 
 
 class Population:
@@ -198,6 +199,26 @@ PSE_NUMBERS: dict[str, int] = {k.lower(): v for v, k in PSE.items()}
 PSE_SYMBOLS: dict[int, str] = {v: k.lower() for v, k in PSE.items()}
 
 
+# helper to slice ORCA output to JOB NUMBER N (use last occurrence)
+def _orca_job_tail(orca_output: str, job_number: int = 2) -> str:
+    """
+    Return only output AFTER the 'JOB NUMBER <job_number>' marker (last occurrence).
+    If no marker is found, return the full output unchanged.
+    """
+    # Marker looks like: $$$$$$$$$$$$$$$  JOB NUMBER  2 $$$$$$$$$$$$$$
+    pat = re.compile(r"\$+\s+JOB NUMBER\s+%d\s+\$+" % job_number)
+    matches = list(pat.finditer(orca_output))
+    if not matches:
+        return orca_output
+    # start AFTER the marker line
+    m = matches[-1]
+    # move to the end of that line (or end of string)
+    nl = orca_output.find("\n", m.end())
+    if nl == -1:
+        return ""
+    return orca_output[nl + 1 :]
+
+
 def get_args() -> ap.Namespace:
     """
     Get the arguments from the command line.
@@ -236,6 +257,12 @@ def get_args() -> ap.Namespace:
         action="store_true",
         required=False,
         help="Use a lightweight STO-3G basis set for faster development runs.",
+    )
+    parser.add_argument(
+        "--small_guess",
+        action="store_true",
+        required=False,
+        help="Run a 2-step ORCA job: small basis (def2-SV(P)) guess first, then TZ job with guess moread.",
     )
     # positional argument for the structure file
     parser.add_argument(
@@ -285,12 +312,36 @@ def write_orca_input(
     heavy_ati: list[int] | None,
     hessian: bool,
     dev: bool,
+    small_guess: bool,
 ) -> Path:
     """
     Write the input file for ORCA.
     """
     orca_input = Path("tz.inp").resolve()
     with open(orca_input, "w", encoding="utf8") as f:
+        # optional 2-step small-basis guess job (only if not dev)
+        if small_guess and not dev:
+            # --- JOB 1 (guess) ---
+            f.write("! wB97M-V def2-SV(P)\n")
+            f.write("! NoTRAH\n")
+            f.write("! SloppySCF DefGrid1\n")
+            f.write("! MiniPrint\n")
+            if heavy_ati:
+                f.write("! AutoAux\n")
+            f.write(f"%pal\n   nprocs {mpi}\nend\n")
+            if heavy_ati:
+                # keep heavy atom overrides for the guess job as well (minimal + robust)
+                f.write("%basis\n")
+                for heavy_atom in heavy_ati:
+                    f.write(f'   NewGTO  {PSE[heavy_atom]} "def-TZVP" end\n')
+                    f.write(f'   NewECP  {PSE[heavy_atom]} "def-ECP" end\n')
+                f.write("end\n")
+            f.write("%scf\n   guess pmodel\n   maxiter 500\nend\n")
+            f.write(f"*xyzfile {chrg} {uhf + 1} struc.xyz\n\n")
+            f.write("$new_job\n\n")
+            # --- JOB 2 (real) continues below (same as old, plus guess moread) ---
+
+        # OLD/MAIN JOB (single job, or 2nd job if small_guess)
         if dev:
             f.write("! PBE STO-3G\n")
         else:
@@ -310,7 +361,11 @@ def write_orca_input(
                 f.write(f'   NewGTO  {PSE[heavy_atom]} "def-TZVP" end\n')
                 f.write(f'   NewECP  {PSE[heavy_atom]} "def-ECP" end\n')
             f.write("end\n")
-        f.write("%scf\n   maxiter 500\nend\n")
+        # NOTE: user expects guess moread here; keep it for compatibility
+        if small_guess:
+            f.write("%scf\n   maxiter 500\n   guess moread\nend\n")
+        else: 
+            f.write("%scf\n   maxiter 500\nend\n")
         f.write("%elprop\n\tOrigin 0.0,0.0,0.0\nend\n")
         f.write(
             "%output\n   Print[P_Hirshfeld] 1\n   "
@@ -394,18 +449,26 @@ def parse_hirshfeld(file: Path) -> list[float]:
     """
     charges: list[float] = []
     with open(file, "r", encoding="utf8") as f:
-        # read all lines
-        lines = f.readlines()
-        for i, line in enumerate(lines):
-            if "HIRSHFELD ANALYSIS" in line:
-                # start reading the Hirshfeld charges
-                for j in range(i + 7, len(lines)):
-                    if lines[j].strip() == "":
-                        continue
-                    if "TOTAL" in lines[j]:
-                        break
-                    charges.append(float(lines[j].split()[2]))
-    return charges
+        orca_output = f.read()
+
+    # only parse JOB 2 if present
+    orca_output = _orca_job_tail(orca_output, job_number=2)
+
+    lines = orca_output.splitlines()
+    # if section occurs multiple times, keep the later one
+    last_charges: list[float] = []
+    for i, line in enumerate(lines):
+        if "HIRSHFELD ANALYSIS" in line:
+            tmp: list[float] = []
+            for j in range(i + 7, len(lines)):
+                if lines[j].strip() == "":
+                    continue
+                if "TOTAL" in lines[j]:
+                    break
+                tmp.append(float(lines[j].split()[2]))
+            if tmp:
+                last_charges = tmp
+    return last_charges
 
 
 def parse_orca_mulliken_charges(
@@ -711,19 +774,21 @@ def convert_orca_output(orca_output_file: Path, openshell: bool) -> None:
     with open(orca_output_file, "r", encoding="utf8") as orca_out:
         orca_content = orca_out.read()
 
-    # grep the number of atoms from this line:
-    # ```Number of atoms                             ...      9```
-    natoms = int(orca_content.split("Number of atoms")[1].split()[1])
+    # only parse JOB 2 if present
+    orca_content_job = _orca_job_tail(orca_content, job_number=2)
+
+    # natoms should come from the (job2) tail if possible; fallback to last in full output
+    try:
+        natoms = int(orca_content_job.split("Number of atoms")[-1].split()[1])
+    except Exception:
+        natoms = int(orca_content.split("Number of atoms")[-1].split()[1])
     print(f"Found {natoms} atoms.")
 
     # set up a list of Population objects
     populations = [Population(i + 1) for i in range(natoms)]
-
-    # mulliken_charges contains the Mulliken atomic charges
-    # with atom number as key and charge as value
-    populations = parse_orca_mulliken_charges(populations, orca_content, openshell)
+    populations = parse_orca_mulliken_charges(populations, orca_content_job, openshell)
     populations = parse_mulliken_reduced_orbital_charges(
-        populations, orca_content, natoms, openshell=openshell
+        populations, orca_content_job, natoms, openshell=openshell
     )
     for pop in populations:
         print(pop)
@@ -947,19 +1012,24 @@ def parse_gradient(file: Path) -> list[list[float]]:
 
     Args:
         file (Path): Path to the ORCA output file.
+    (In multi-job inputs, this automatically parses only JOB NUMBER 2 if present.)
     """
+    with open(file, "r", encoding="utf8") as f:
+        orca_output = f.read()
+
+    # only parse JOB 2 if present
+    orca_output = _orca_job_tail(orca_output, job_number=2)
 
     gradient: list[list[float]] = []
-    with open(file, "r", encoding="utf8") as f:
-        # read all lines
-        lines = f.readlines()
-        for i, line in enumerate(lines):
-            if "CARTESIAN GRADIENT" in line:
-                # start reading the gradient
-                for j in range(i + 3, len(lines)):
-                    if lines[j].strip() == "":
-                        break
-                    gradient.append([float(x) for x in lines[j].split()[3:]])
+    lines = orca_output.splitlines()
+    for i, line in enumerate(lines):
+        if "CARTESIAN GRADIENT" in line:
+            gradient = []
+            for j in range(i + 3, len(lines)):
+                if lines[j].strip() == "":
+                    break
+                gradient.append([float(x) for x in lines[j].split()[3:]])
+            # keep the later one if it occurs again
     return gradient
 
 
@@ -1188,7 +1258,13 @@ def main() -> int:
     chrg, uhf = get_chrg_uhf(nel_raw)
 
     orca_input_file = write_orca_input(
-        args.mpi, chrg, uhf, heavy_atoms, args.hessian, args.dev
+        args.mpi,
+        chrg,
+        uhf,
+        heavy_atoms,
+        args.hessian,
+        args.dev,
+        args.small_guess,
     )
 
     # execute ORCA with the generated input file
@@ -1213,6 +1289,7 @@ def main() -> int:
         print(f"Hirshfeld charges: {charges}")
 
     # parse energy from ORCA output file
+    # do not break early; keep the LAST occurrence (job2)
     energy: float | None = None
     dipole: list[float] | None = None
     with open(orca_output_file, "r", encoding="utf8") as f:
@@ -1223,7 +1300,7 @@ def main() -> int:
             # Total Dipole Moment    :      0.517831297       0.043824204       0.411962740
             if "Total Dipole Moment" in line:
                 dipole = [float(x) for x in line.split()[4:]]
-                break
+
     if not energy:
         raise ValueError("Energy not found in ORCA output file.")
     if not dipole:
@@ -1236,7 +1313,9 @@ def main() -> int:
     gradient = parse_gradient(orca_output_file)
     print(f"Gradient: {gradient}")
     write_tm_gradient(gradient, xyz, symbols, energy)
+
     convert_orca_output(orca_output_file, openshell=uhf > 0)
+
     if args.hessian:
         hess_file = orca_input_file.with_suffix(".hess")
         hessian = parse_orca_hessian(hess_file, natoms)
