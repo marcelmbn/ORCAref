@@ -1317,7 +1317,8 @@ def main() -> int:
     convert_orca_output(orca_output_file, openshell=uhf > 0)
 
     if args.hessian:
-        hess_file = orca_input_file.with_suffix(".hess")
+        base = orca_input_file.with_suffix("")
+        hess_file = base.with_name(base.name + ("_job2.hess" if args.small_guess else ".hess"))
         hessian = parse_orca_hessian(hess_file, natoms)
         write_tm_hessian(hessian, "hessian")
     return 0
