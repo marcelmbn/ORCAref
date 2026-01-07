@@ -264,6 +264,16 @@ def get_args() -> ap.Namespace:
         required=False,
         help="Run a 2-step ORCA job: small basis (def2-SV(P)) guess first, then TZ job with guess moread.",
     )
+    # 3-step option (job1 = double-cation SV(P), job2 = neutral SV(P), job3 = TZ)
+    parser.add_argument(
+        "--double_cation_guess",
+        action="store_true",
+        required=False,
+        help=(
+            "Run a 3-step ORCA job: (1) def2-SV(P) pre-SCF for the double cation to improve convergence, "
+            "(2) def2-SV(P) neutral guess (moread), (3) TZ job with guess moread."
+        ),
+    )
     # positional argument for the structure file
     parser.add_argument(
         "structure",
@@ -313,15 +323,17 @@ def write_orca_input(
     hessian: bool,
     dev: bool,
     small_guess: bool,
+    double_cation_guess: bool,
+    uhf_cation_guess: int,
 ) -> Path:
     """
     Write the input file for ORCA.
     """
     orca_input = Path("tz.inp").resolve()
     with open(orca_input, "w", encoding="utf8") as f:
-        # optional 2-step small-basis guess job (only if not dev)
-        if small_guess and not dev:
-            # --- JOB 1 (guess) ---
+        # optional 3-step "double cation -> neutral guess -> TZ" (only if not dev)
+        if double_cation_guess and not dev:
+            # --- JOB 1 (double cation pre-guess) ---
             f.write("! wB97M-V def2-SV(P)\n")
             f.write("! NoTRAH\n")
             f.write("! SloppySCF DefGrid1\n")
@@ -337,11 +349,37 @@ def write_orca_input(
                     f.write(f'   NewECP  {PSE[heavy_atom]} "def-ECP" end\n')
                 f.write("end\n")
             f.write("%scf\n   guess pmodel\n   maxiter 500\nend\n")
+            # NOTE: job1 is for the DOUBLE CATION (charge +2); multiplicity from uhf_cation_guess
+            f.write(f"*xyzfile {chrg + 2} {uhf_cation_guess + 1} struc.xyz\n\n")
+            f.write("$new_job\n\n")
+
+        # optional 2-step/3-step small-basis guess job (only if not dev)
+        if small_guess and not dev:
+            # --- JOB (guess) ---
+            f.write("! wB97M-V def2-SV(P)\n")
+            f.write("! NoTRAH\n")
+            f.write("! SloppySCF DefGrid1\n")
+            f.write("! MiniPrint\n")
+            if heavy_ati:
+                f.write("! AutoAux\n")
+            f.write(f"%pal\n   nprocs {mpi}\nend\n")
+            if heavy_ati:
+                # keep heavy atom overrides for the guess job as well (minimal + robust)
+                f.write("%basis\n")
+                for heavy_atom in heavy_ati:
+                    f.write(f'   NewGTO  {PSE[heavy_atom]} "def-TZVP" end\n')
+                    f.write(f'   NewECP  {PSE[heavy_atom]} "def-ECP" end\n')
+                f.write("end\n")
+            # NOTE: in the 3-step mode, job2 should use the orbitals from job1 -> guess moread
+            if double_cation_guess:
+                f.write("%scf\n   guess moread\n   maxiter 500\nend\n")
+            else:
+                f.write("%scf\n   guess pmodel\n   maxiter 500\nend\n")
             f.write(f"*xyzfile {chrg} {uhf + 1} struc.xyz\n\n")
             f.write("$new_job\n\n")
-            # --- JOB 2 (real) continues below (same as old, plus guess moread) ---
+            # --- JOB 2 (real) in 2-step, or JOB 3 (real) in 3-step continues below ---
 
-        # OLD/MAIN JOB (single job, or 2nd job if small_guess)
+        # OLD/MAIN JOB (single job, or final job if small_guess/double_cation_guess)
         if dev:
             f.write("! PBE STO-3G\n")
         else:
@@ -362,9 +400,9 @@ def write_orca_input(
                 f.write(f'   NewECP  {PSE[heavy_atom]} "def-ECP" end\n')
             f.write("end\n")
         # NOTE: user expects guess moread here; keep it for compatibility
-        if small_guess:
+        if small_guess or double_cation_guess:
             f.write("%scf\n   maxiter 500\n   guess moread\nend\n")
-        else: 
+        else:
             f.write("%scf\n   maxiter 500\nend\n")
         f.write("%elprop\n\tOrigin 0.0,0.0,0.0\nend\n")
         f.write(
@@ -409,7 +447,7 @@ def get_chrg_uhf(nel_orig: int) -> tuple[int, int]:
     return chrg, uhf
 
 
-def parse_hirshfeld(file: Path) -> list[float]:
+def parse_hirshfeld(file: Path, job_number: int = 2) -> list[float]:
     """
     Parse the Hirshfeld charges from the ORCA output file.
 
@@ -451,8 +489,8 @@ def parse_hirshfeld(file: Path) -> list[float]:
     with open(file, "r", encoding="utf8") as f:
         orca_output = f.read()
 
-    # only parse JOB 2 if present
-    orca_output = _orca_job_tail(orca_output, job_number=2)
+    # only parse JOB N if present (use last occurrence)
+    orca_output = _orca_job_tail(orca_output, job_number=job_number)
 
     lines = orca_output.splitlines()
     # if section occurs multiple times, keep the later one
@@ -660,7 +698,9 @@ def parse_mulliken_reduced_orbital_charges(
     return populations
 
 
-def convert_orca_output(orca_output_file: Path, openshell: bool) -> None:
+def convert_orca_output(
+    orca_output_file: Path, openshell: bool, job_number: int = 2
+) -> None:
     """
     Parse the ORCA output file and extract relevant information.
 
@@ -774,10 +814,10 @@ def convert_orca_output(orca_output_file: Path, openshell: bool) -> None:
     with open(orca_output_file, "r", encoding="utf8") as orca_out:
         orca_content = orca_out.read()
 
-    # only parse JOB 2 if present
-    orca_content_job = _orca_job_tail(orca_content, job_number=2)
+    # only parse JOB N if present
+    orca_content_job = _orca_job_tail(orca_content, job_number=job_number)
 
-    # natoms should come from the (job2) tail if possible; fallback to last in full output
+    # natoms should come from the (jobN) tail if possible; fallback to last in full output
     try:
         natoms = int(orca_content_job.split("Number of atoms")[-1].split()[1])
     except Exception:
@@ -914,14 +954,35 @@ def get_multiwfn_hirshfeld() -> tuple[Path, Path, Path]:
     multiwfn_charge_file = Path("multiwfn.chg").resolve()
     multiwfn_output_file = Path("multiwfn.out").resolve()
     multiwfn_error_file = Path("multiwfn.err").resolve()
-    print("Running ORCA_2MKL")
+
+    # be robust for multi-job runs (try tz_jobN.gbw first, else tz.gbw)
+    gbw_base = "tz"
+    gbw_jobs = list(Path(".").glob("tz_job*.gbw"))
+    if gbw_jobs:
+
+        def _jobnum(p: Path) -> int:
+            m = re.search(r"_job(\d+)\.gbw$", p.name)
+            return int(m.group(1)) if m else -1
+
+        gbw_jobs.sort(key=_jobnum)
+        gbw_base = gbw_jobs[-1].with_suffix("").name  # e.g. "tz_job3"
+    elif not Path("tz.gbw").is_file():
+        # keep old behavior if file layout is different, but fail loudly
+        raise FileNotFoundError(
+            "No ORCA GBW file found (expected tz.gbw or tz_job*.gbw)."
+        )
+
+    print(f"Running ORCA_2MKL (base: {gbw_base})")
     try:
         with (
             open(multiwfn_output_file, "w", encoding="utf8") as out,
             open(multiwfn_error_file, "w", encoding="utf8") as err,
         ):
             sp.run(
-                [orca_2mkl_path, "tz", "-molden"], stdout=out, stderr=err, check=True
+                [orca_2mkl_path, gbw_base, "-molden"],
+                stdout=out,
+                stderr=err,
+                check=True,
             )
     except sp.CalledProcessError as e:
         raise ValueError(f"ORCA_2MKL did not terminate normally: {e}") from e
@@ -938,6 +999,7 @@ def get_multiwfn_hirshfeld() -> tuple[Path, Path, Path]:
         multiwfn_input_file.write("7\n1\n1\ny\n0\n9\n1\nn\n0\nq\n")
 
     # run Multiwfn for Hirshfeld charges
+    molden_inp = f"{gbw_base}.molden.input"
     try:
         with (
             open("inp", "r", encoding="utf8") as inp,
@@ -945,7 +1007,7 @@ def get_multiwfn_hirshfeld() -> tuple[Path, Path, Path]:
             open(multiwfn_error_file, "w", encoding="utf8") as err,
         ):
             sp.run(
-                [multiwfn_path, "tz.molden.input", "-nt", "8"],
+                [multiwfn_path, molden_inp, "-nt", "8"],
                 stdin=inp,
                 stdout=out,
                 stderr=err,
@@ -955,12 +1017,16 @@ def get_multiwfn_hirshfeld() -> tuple[Path, Path, Path]:
         raise ValueError(f"Multiwfn did not terminate normally: {e}") from e
 
     # Move the generated Hirshfeld charges file to multiwfn.chg
+    # (in multi-job runs, the file name can follow the gbw base)
     try:
-        sh.move("tz.chg", "multiwfn.chg")
+        cand = Path(f"{gbw_base}.chg")
+        if cand.is_file():
+            sh.move(str(cand), "multiwfn.chg")
+        else:
+            # old behavior fallback
+            sh.move("tz.chg", "multiwfn.chg")
     except Exception as exc:
-        raise ValueError(
-            "Multiwfn did not generate the Hirshfeld charges file."
-        ) from exc
+        raise ValueError("Multiwfn did not generate the Hirshfeld charges file.") from exc
 
     return multiwfn_charge_file, multiwfn_output_file, multiwfn_error_file
 
@@ -993,7 +1059,7 @@ def write_control_file(energy: float, dipole: list[float]) -> None:
         f.write("$end\n")
 
 
-def parse_gradient(file: Path) -> list[list[float]]:
+def parse_gradient(file: Path, job_number: int = 2) -> list[list[float]]:
     """
     Parse the gradient from the ORCA output file:
     ------------------
@@ -1012,13 +1078,13 @@ def parse_gradient(file: Path) -> list[list[float]]:
 
     Args:
         file (Path): Path to the ORCA output file.
-    (In multi-job inputs, this automatically parses only JOB NUMBER 2 if present.)
+    (In multi-job inputs, this automatically parses only JOB NUMBER N if present.)
     """
     with open(file, "r", encoding="utf8") as f:
         orca_output = f.read()
 
-    # only parse JOB 2 if present
-    orca_output = _orca_job_tail(orca_output, job_number=2)
+    # only parse JOB N if present
+    orca_output = _orca_job_tail(orca_output, job_number=job_number)
 
     gradient: list[list[float]] = []
     lines = orca_output.splitlines()
@@ -1257,6 +1323,40 @@ def main() -> int:
     # get the charge and multiplicity from the .CHRG and .UHF files
     chrg, uhf = get_chrg_uhf(nel_raw)
 
+    # unify multi-job options (double_cation_guess implies small_guess)
+    small_guess_eff = (args.small_guess or args.double_cation_guess) and (not args.dev)
+    double_cation_eff = args.double_cation_guess and (not args.dev)
+
+    # compute spin for the double cation pre-step by removing two electrons
+    # IMPORTANT: take UHF from .UHF into account (reduce unpaired electrons by 2 if possible);
+    #            closed shell stays closed shell; also keep parity consistent with electron count.
+    uhf_cation_guess = 0
+    if double_cation_eff:
+        nel_cation = nel_raw - (chrg + 2)
+        min_uhf = 0 if (nel_cation % 2 == 0) else 1
+
+        # If the user specified an open-shell state via .UHF, remove two unpaired electrons
+        # for the double cation pre-guess (e.g., UHF=4 -> UHF=2).
+        uhf_cation_guess = max(min_uhf, uhf - 2)
+
+        # safety: enforce parity (UHF parity must match electron-count parity)
+        if (uhf_cation_guess % 2) != (nel_cation % 2):
+            uhf_cation_guess += 1
+
+        print(
+            f"Double-cation pre-guess enabled: charge={chrg+2}, uhf={uhf_cation_guess} (mult={uhf_cation_guess+1})"
+        )
+
+    # final job number bookkeeping for parsing + file names
+    # - single job: 1
+    # - small_guess: 2
+    # - double_cation_guess: 3
+    final_job_number = 1
+    if double_cation_eff:
+        final_job_number = 3
+    elif small_guess_eff:
+        final_job_number = 2
+
     orca_input_file = write_orca_input(
         args.mpi,
         chrg,
@@ -1264,7 +1364,9 @@ def main() -> int:
         heavy_atoms,
         args.hessian,
         args.dev,
-        args.small_guess,
+        small_guess_eff,
+        double_cation_eff,
+        uhf_cation_guess,
     )
 
     # execute ORCA with the generated input file
@@ -1275,7 +1377,7 @@ def main() -> int:
 
     if args.orca_hirshfeld:
         # parse the Hirshfeld charges from the ORCA output file
-        charges = parse_hirshfeld(orca_output_file)
+        charges = parse_hirshfeld(orca_output_file, job_number=final_job_number)
         print(f"Hirshfeld charges: {charges}")
         # write charges to multiwfn.chg
         write_multiwfn_charges(charges, ati, xyz)
@@ -1289,7 +1391,7 @@ def main() -> int:
         print(f"Hirshfeld charges: {charges}")
 
     # parse energy from ORCA output file
-    # do not break early; keep the LAST occurrence (job2)
+    # do not break early; keep the LAST occurrence (jobN)
     energy: float | None = None
     dipole: list[float] | None = None
     with open(orca_output_file, "r", encoding="utf8") as f:
@@ -1310,15 +1412,19 @@ def main() -> int:
     write_control_file(energy, dipole)
 
     # parse gradient from ORCA output file
-    gradient = parse_gradient(orca_output_file)
+    gradient = parse_gradient(orca_output_file, job_number=final_job_number)
     print(f"Gradient: {gradient}")
     write_tm_gradient(gradient, xyz, symbols, energy)
 
-    convert_orca_output(orca_output_file, openshell=uhf > 0)
+    convert_orca_output(
+        orca_output_file, openshell=uhf > 0, job_number=final_job_number
+    )
 
     if args.hessian:
         base = orca_input_file.with_suffix("")
-        hess_file = base.with_name(base.name + ("_job2.hess" if args.small_guess else ".hess"))
+        # job-dependent hessian naming (single job -> .hess, multi-job -> _jobN.hess)
+        suffix = ".hess" if final_job_number == 1 else f"_job{final_job_number}.hess"
+        hess_file = base.with_name(base.name + suffix)
         hessian = parse_orca_hessian(hess_file, natoms)
         write_tm_hessian(hessian, "hessian")
     return 0
